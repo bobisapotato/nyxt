@@ -3,12 +3,11 @@
 
 (in-package :password)
 
-(eval-when (:compile-toplevel :load-toplevel :execute)
-  (export '*sleep-timer*))
-(defvar *sleep-timer* 15)
-
 (defclass password-interface ()
-  ())
+  ((executable :accessor executable :initarg :executable
+               :documentation "The program to query for password information.")
+   (sleep-timer :accessor sleep-timer :initarg :sleep-timer :initform 15
+                :documentation "The amount of time to sleep, in seconds.")))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (export 'list-passwords))
@@ -31,6 +30,9 @@ If PASSWORD-NAME is empty, then generate a new password."))
 (defgeneric password-correct-p (password-interface)
   (:documentation "Return T if set password is correct, NIL otherwise."))
 
+(defmacro execute (interface arguments &body body)
+  `(uiop:run-program (append (list (executable ,interface)) ,arguments) ,@body))
+
 (defun safe-clipboard-text ()
   "Return clipboard content, or \"\" if the content is not textual."
   ;; xclip errors out when the clipboard contains non-text:
@@ -38,11 +40,11 @@ If PASSWORD-NAME is empty, then generate a new password."))
   (ignore-errors (trivial-clipboard:text)))
 
 ;;; Prerequisite Functions
-(defun clip-password-string (pass)
+(defmethod clip-password-string ((password-interface password-interface) pass)
   (trivial-clipboard:text pass)
   (bt:make-thread
    (lambda ()
-     (sleep *sleep-timer*)
+     (sleep (sleep-timer password-interface))
      (when (string= (safe-clipboard-text) pass)
        ;; Reset the clipboard so that the user does not accidentally paste
        ;; something else.
@@ -61,14 +63,5 @@ Return nil if COMMAND is not found anywhere."
     path))
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
-  (export 'interface-list))
-(defvar interface-list '()
-  "List of interface intializing functions.
-`make' returns the first non-nil value which is returned by an invocation of one
-of the functions.")
-
-(eval-when (:compile-toplevel :load-toplevel :execute)
-  (export 'make))
-(defun make ()
-  "Initalize the first interface in `interface-list' that returns non-nil."
-  (some #'funcall interface-list))
+  (export '*interfaces*))
+(defvar *interfaces* (list))

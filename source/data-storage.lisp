@@ -25,44 +25,57 @@ This can be used to set the path from command line.  See
 `expand-default-path'."))
   (:export-class-name-p t)
   (:export-accessor-names-p t)
-  (:accessor-name-transformer #'class*:name-identity))
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name)))
 
-(define-class session-data-path (data-path)
-  ((ref :initform "session"))
+(define-class async-data-path (data-path)
+  ((channel nil
+            :type (or null calispel:channel)
+            :documentation "Channel that can be used to communicate with the
+thread persisting the data to disk.")
+   (timeout 0.0
+            :documentation "Time to wait on channel for other messages before
+storing.  A timeout of 0 means that as soon as 1 message is received, the thread
+will store the data immediately.  This can waste a store cycle if another
+messages is receieve a fraction of a second after that.  Increasing the timeout
+allows the thread to capture more batches together.  Obviously a higher timeout
+means the store operations are systematically delayed."))
   (:export-class-name-p t)
-  (:accessor-name-transformer #'class*:name-identity))
+  (:export-accessor-names-p t)
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name)))
+
 (define-class cookies-data-path (data-path)
-  ((ref :initform "cookies"))
+  ((ref "cookies"))
   (:export-class-name-p t)
-  (:accessor-name-transformer #'class*:name-identity))
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name)))
 (define-class bookmarks-data-path (data-path)
-  ((ref :initform "bookmarks"))
+  ((ref "bookmarks"))
   (:export-class-name-p t)
-  (:accessor-name-transformer #'class*:name-identity))
-(define-class history-data-path (data-path)
-  ((ref :initform "history"))
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name)))
+(define-class history-data-path (async-data-path)
+  ((ref "history")
+   (timeout 0.05))
   (:export-class-name-p t)
-  (:accessor-name-transformer #'class*:name-identity))
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name)))
 (define-class download-data-path (data-path) ; TODO: Rename to downloads-data-path?
-  ((ref :initform "download"))
+  ((ref "download"))
   (:export-class-name-p t)
-  (:accessor-name-transformer #'class*:name-identity))
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name)))
 (define-class auto-mode-rules-data-path (data-path)
-  ((ref :initform "auto-mode-rules"))
+  ((ref "auto-mode-rules"))
   (:export-class-name-p t)
-  (:accessor-name-transformer #'class*:name-identity))
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name)))
 (define-class standard-output-data-path (data-path)
-  ((ref :initform "standard-output"))
+  ((ref "standard-output"))
   (:export-class-name-p t)
-  (:accessor-name-transformer #'class*:name-identity))
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name)))
 (define-class error-output-data-path (data-path)
-  ((ref :initform "error-output"))
+  ((ref "error-output"))
   (:export-class-name-p t)
-  (:accessor-name-transformer #'class*:name-identity))
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name)))
 (define-class css-cache-data-path (data-path)
-  ((ref :initform "mode-css-cache"))
+  ((ref "mode-css-cache"))
   (:export-class-name-p t)
-  (:accessor-name-transformer #'class*:name-identity))
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name)))
 
 (export-always 'xdg-download-dir)
 (defun xdg-download-dir ()
@@ -81,22 +94,22 @@ This can be used to set the path from command line.  See
          :documentation "The name of the profile to refer it with."))
   (:export-class-name-p t)
   (:export-accessor-names-p t)
-  (:accessor-name-transformer #'class*:name-identity))
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name)))
 
 (define-class default-data-profile (data-profile)
   ((name :initform "default"))
   (:export-class-name-p t)
   (:documentation "With the default profile all data is persisted to the standard locations."))
 
-(define-class private-data-profile (data-profile)
-  ((name :initform "private")
+(define-class nosave-data-profile (data-profile)
+  ((name :initform "nosave")
    (user-data-cache (make-hash-table :test #'equal)
                     :type hash-table
-                    :documentation "Buffer-local `user-data-cache' to isolate the data of a private buffer."))
+                    :documentation "Buffer-local `user-data-cache' to isolate the data of a nosave buffer."))
   (:export-class-name-p t)
   (:export-accessor-names-p t)
-  (:accessor-name-transformer #'class*:name-identity)
-  (:documentation "With the private profile no data should be persisted to disk.
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name))
+  (:documentation "With the nosave profile no data should be persisted to disk.
 No data should be shared with other buffers either."))
 
 (export-always '*global-data-profile*)
@@ -186,20 +199,16 @@ Return NIL when path must not be used.  This makes it possible to use the
 function result as a boolean in conditions."
   (expand-default-path path))
 
-(defmethod expand-data-path ((profile private-data-profile) (path session-data-path))
-  "We shouldn't store sessions for `private-data-profile'."
+(defmethod expand-data-path ((profile nosave-data-profile) (path cookies-data-path))
+  "We shouldn't store cookies for `nosave-data-profile'."
   nil)
 
-(defmethod expand-data-path ((profile private-data-profile) (path cookies-data-path))
-  "We shouldn't store cookies for `private-data-profile'."
+(defmethod expand-data-path ((profile nosave-data-profile) (path standard-output-data-path))
+  "We shouldn't store `*standard-output*' for `nosave-data-profile'."
   nil)
 
-(defmethod expand-data-path ((profile private-data-profile) (path standard-output-data-path))
-  "We shouldn't store `*standard-output*' for `private-data-profile'."
-  nil)
-
-(defmethod expand-data-path ((profile private-data-profile) (path error-output-data-path))
-  "We shouldn't store `*error-output*' for `private-data-profile'."
+(defmethod expand-data-path ((profile nosave-data-profile) (path error-output-data-path))
+  "We shouldn't store `*error-output*' for `nosave-data-profile'."
   nil)
 
 (export-always 'ensure-parent-exists)
@@ -211,26 +220,43 @@ function result as a boolean in conditions."
   path)
 
 (export-always 'store)
-(defgeneric store (profile path)
-  (:method ((profile data-profile) (path data-path))
+(defgeneric store (profile path &key &allow-other-keys)
+  (:method ((profile data-profile) (path data-path) &key &allow-other-keys)
     nil)
   (:documentation "The generic way to store data to the given path type.
 Define a method for your `data-path' type to make it storable."))
 
 (export-always 'restore)
-(defgeneric restore (profile path)
-  (:method ((profile data-profile) (path data-path))
+(defgeneric restore (profile path &key &allow-other-keys)
+  (:method ((profile data-profile) (path data-path) &key &allow-other-keys)
     nil)
   (:documentation "The generic way to restore data from the given path type.
 Define a method for your `data-path' type to make it restorable."))
 
-(defmethod store ((profile private-data-profile) (path data-path))
-  "This method guarantees PATH will not be persisted to disk in PRIVATE-DATA-PROFILE."
+(defmethod store ((profile nosave-data-profile) (path data-path) &key &allow-other-keys)
+  "This method guarantees PATH will not be persisted to disk in NOSAVE-DATA-PROFILE."
   nil)
 
-(defmethod restore ((profile private-data-profile) (path data-path))
-  "This method guarantees PATH will not be loaded from disk in PRIVATE-DATA-PROFILE."
+(defmethod restore ((profile nosave-data-profile) (path data-path) &key &allow-other-keys)
+  "This method guarantees PATH will not be loaded from disk in NOSAVE-DATA-PROFILE."
   nil)
+
+(defmethod store :around ((profile data-profile) (path async-data-path) &key &allow-other-keys)
+  (labels ((worker ()
+             (let ((store-ops (drain-channel (channel path) (timeout path))))
+               (when (< 1 (length store-ops))
+                 (log:debug "Skipping ~a unnecessary ~a store ops"
+                           (1- (length store-ops))
+                           path))
+               ;; TODO: Lock here? Seems to dead-lock history forward/backward.
+               ;; (bt:with-recursive-lock-held ((lock (get-user-data profile path))))
+               (call-next-method))
+             (worker)))
+    (unless (channel path)
+      (setf (channel path) (make-channel))
+      (bt:make-thread #'worker))
+    ;; We pass `path', but anything would do since the value is ignored.
+    (calispel:! (channel path) path)))
 
 (export-always 'expand-path)
 (declaim (ftype (function ((or null data-path)) (or string null)) expand-path))
@@ -245,7 +271,7 @@ This function can be used on browser-less globals like `*init-file-path*'."
            ("" nil)
            (m (uiop:native-namestring m))))))
 
-;; TODO: create subclasses for history, session, bookmark, auto-mode data to ensure typing?
+;; TODO: create subclasses for history, bookmark, auto-mode data to ensure typing?
 (define-class user-data ()
   ((data nil
          :type t
@@ -255,15 +281,15 @@ This function can be used on browser-less globals like `*init-file-path*'."
          :documentation "The lock to guard from race conditions on the access to this data."))
   (:export-class-name-p t)
   (:export-accessor-names-p t)
-  (:accessor-name-transformer #'class*:name-identity)
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name))
   (:documentation "The class to mediate the data keeping."))
 
 (export-always 'get-user-data)
 (defgeneric get-user-data (profile path)
   (:documentation "Access the browsing-related data depending on the `data-profile'."))
 
-(defmethod get-user-data ((profile private-data-profile) (path data-path))
-  "Look up the buffer-local data in case of `private-data-profile'."
+(defmethod get-user-data ((profile nosave-data-profile) (path data-path))
+  "Look up the buffer-local data in case of `nosave-data-profile'."
   (%get-user-data profile path (user-data-cache profile)))
 
 (export-always 'get-data)
@@ -276,9 +302,11 @@ This function can be used on browser-less globals like `*init-file-path*'."
 
 (export-always 'with-data-access)
 (defmacro with-data-access ((data-var data-path &key default) &body body)
-  "Lock the data for the BODY to avoid race conditions.
+  "Lock the data for the BODY to avoid race conditions and safely modify it.
 Bind the DATA-VAR to the value of the data from DATA-PATH to reuse it.
-In case there's no data, bind DATA-VAR to DEFAULT and set data to it."
+In case there's no data, bind DATA-VAR to DEFAULT and set data to it.
+
+For a faster and modification-unsafe version, see `with-data-unsafe'."
   (alex:with-gensyms (lock path-name)
     `(let* ((,path-name ,data-path)
             (,lock (lock (get-user-data (current-data-profile) ,path-name))))
@@ -288,6 +316,22 @@ In case there's no data, bind DATA-VAR to DEFAULT and set data to it."
                 (progn ,@body)
              (setf (get-data ,path-name) ,data-var)
              (store (current-data-profile) ,path-name)))))))
+
+(export-always 'with-data-unsafe)
+(defmacro with-data-unsafe ((data-var data-path &key key) &body body)
+  "Bind the data to DATA-VAR for a fast non-modifying lookup.
+Bind the DATA-VAR to the value of the data from DATA-PATH to reuse it.
+In case there's no data, bind DATA-VAR to DEFAULT.
+
+If KEY is used, bind the result of applying KEY to the data, to
+DATA-VAR.
+
+Beware: this is not a thread-safe macro, so data may be altered while
+you use this macro! For a modification-safe macro, see `with-data-access'."
+  `(let ((,data-var ,(if key
+                         `(funcall ,key (get-data ,data-path))
+                         `(get-data ,data-path))))
+     (progn ,@body)))
 
 (defvar *gpg-default-recipient* nil)
 
@@ -447,3 +491,23 @@ Parent directories are created if necessary."
        (when ,path
          (with-maybe-gpg-file (,stream ,path ,@options)
            ,@body)))))
+
+(defun file-url-p (url &key check-exists-p)
+  "Check if a url (string) represents a file, and optionally check if said file
+exists."
+  ;; check if a string starts with file to avoid excessive processing
+  (when (str:starts-with-p "file" url)
+    (let ((uri (quri:uri url)))
+      (if check-exists-p
+          (and (equalp "file" (quri:uri-scheme uri))
+               (uiop:probe-file* (quri:uri-path uri)))
+          (equalp "file" (quri:uri-scheme uri))))))
+
+(defun read-file-string (url)
+  "Read a file from a file:// type URL into a string."
+  (uiop:read-file-string (quri:uri-path (quri:uri url))))
+
+(defun set-socket-permissions (socket-path numeric-mode)
+  "Change socket (file) permissions user."
+  #+unix
+  (uiop:run-program (list "chmod" numeric-mode socket-path)))

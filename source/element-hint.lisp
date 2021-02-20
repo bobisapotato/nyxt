@@ -20,8 +20,8 @@
     (unless (qs document "#nyxt-stylesheet")
       (ps:try
        (ps:let* ((style-element (ps:chain document (create-element "style")))
-                 (box-style (ps:lisp (box-style (current-buffer))))
-                 (highlighted-style (ps:lisp (highlighted-box-style (current-buffer)))))
+                 (box-style (ps:lisp (box-style (current-web-mode))))
+                 (highlighted-style (ps:lisp (highlighted-box-style (current-web-mode)))))
          (setf (ps:@ style-element id) "nyxt-stylesheet")
          (ps:chain document head (append-child style-element))
          (ps:chain style-element sheet (insert-rule box-style 0))
@@ -73,9 +73,9 @@ identifier for every hinted element."
           ((equal "BUTTON" (ps:@ element tag-name))
            (ps:create "type" "button" "hint" hint "identifier" hint "body" (ps:@ element |innerHTML|)))
           ((equal "INPUT" (ps:@ element tag-name))
-           (ps:create "type" "input" "hint" hint "identifier" hint))
+           (ps:create "type" "input" "hint" hint "identifier" hint "placeholder" (ps:@ element placeholder)))
           ((equal "TEXTAREA" (ps:@ element tag-name))
-           (ps:create "type" "textarea" "hint" hint "identifier" hint))
+           (ps:create "type" "textarea" "hint" hint "identifier" hint "placeholder" (ps:@ element placeholder)))
           ((equal "IMG" (ps:@ element tag-name))
            (ps:create "type" "img" "hint" hint "identifier" hint "src" (ps:@ element src) "alt" (ps:@ element alt)))
           ((ps:@ element onclick)
@@ -105,7 +105,7 @@ identifier for every hinted element."
 
   (defun hints-generate (length)
     "Generates hints that will appear on the elements"
-    (ps:let ((alphabet (ps:lisp (hints-alphabet (current-buffer)))))
+    (ps:let ((alphabet (ps:lisp (hints-alphabet (current-web-mode)))))
       (strings-generate length alphabet)))
 
   (defun strings-generate (length alphabet)
@@ -222,11 +222,13 @@ identifier for every hinted element."
                   ("input"
                    (make-instance 'input-hint
                                   :identifier (alex:assoc-value element :identifier)
-                                  :hint (alex:assoc-value element :hint)))
+                                  :hint (alex:assoc-value element :hint)
+                                  :placeholder-text (alex:assoc-value element :placeholder)))
                   ("textarea"
                    (make-instance 'textarea-hint
                                   :identifier (alex:assoc-value element :identifier)
-                                  :hint (alex:assoc-value element :hint)))
+                                  :hint (alex:assoc-value element :hint)
+                                  :placeholder-text (alex:assoc-value element :placeholder)))
                   ("img"
                    (make-instance 'image-hint
                                   :identifier (alex:assoc-value element :identifier)
@@ -249,7 +251,7 @@ identifier for every hinted element."
    ;; TODO: Move to `link-hint' or `button-hint'? Maybe add an intermediate class?
    (body ""
          :documentation "The body of the anchor tag."))
-  (:accessor-name-transformer #'class*:name-identity))
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name)))
 
 (define-class clickable-hint (hint) ())
 
@@ -259,15 +261,21 @@ identifier for every hinted element."
 
 (define-class link-hint (hint)
   ((url ""))
-  (:accessor-name-transformer #'class*:name-identity))
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name)))
 
-(define-class input-hint (focusable-hint) ())
+(define-class input-hint (focusable-hint)
+  ((placeholder-text "" :documentation "The placeholder text of the input element.
+I.e. the grey text initially seen in it."))
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name)))
 
-(define-class textarea-hint (focusable-hint) ())
+(define-class textarea-hint (focusable-hint)
+  ((placeholder-text "" :documentation "The placeholder text of the textarea.
+I.e. the grey text initially seen in it."))
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name)))
 
 (define-class image-hint (link-hint)
   ((alt "" :documentation "Alternative text for the image."))
-  (:accessor-name-transformer #'class*:name-identity))
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name)))
 
 (defmethod object-string ((hint hint))
   (hint hint))
@@ -294,10 +302,16 @@ identifier for every hinted element."
   (format nil "~a  Focusable" (hint focusable-hint)))
 
 (defmethod object-display ((input-hint input-hint))
-  (format nil "~a  Input" (hint input-hint)))
+  (format nil "~a  ~:[~a  ~;~]Input"
+          (hint input-hint)
+          (str:emptyp (placeholder-text input-hint))
+          (placeholder-text input-hint)))
 
 (defmethod object-display ((textarea-hint textarea-hint))
-  (format nil "~a  Textarea" (hint textarea-hint)))
+  (format nil "~a  ~:[~a  ~;~]Textarea"
+          (hint textarea-hint)
+          (str:emptyp (placeholder-text textarea-hint))
+          (placeholder-text textarea-hint)))
 
 (defmethod object-display ((image-hint image-hint))
   (format nil "~a  ~a  ~a"
@@ -314,16 +328,32 @@ identifier for every hinted element."
 (defmethod %follow-hint ((focusable-hint focusable-hint))
   (focus-element :nyxt-identifier (identifier focusable-hint)))
 
-(defmethod %follow-hint-new-buffer-focus ((link-hint link-hint))
-  (make-buffer-focus :url (url link-hint)))
+(defmethod %follow-hint-new-buffer-focus ((link-hint link-hint) &optional parent-buffer)
+  (make-buffer-focus :url (url link-hint)
+                     :parent-buffer parent-buffer
+                     :nosave-buffer-p (nosave-buffer-p parent-buffer)))
 
-(defmethod %follow-hint-new-buffer-focus ((hint hint))
+(defmethod %follow-hint-new-buffer-focus ((hint hint) &optional parent-buffer)
+  (declare (ignore parent-buffer))
   (echo "Unsupported operation for hint: can't open in new buffer."))
 
-(defmethod %follow-hint-new-buffer ((link-hint link-hint))
-  (make-buffer :url (url link-hint)))
+(defmethod %follow-hint-new-buffer ((link-hint link-hint) &optional parent-buffer)
+  (make-buffer :url (url link-hint) :parent-buffer parent-buffer))
 
-(defmethod %follow-hint-new-buffer ((hint hint))
+(defmethod %follow-hint-new-buffer ((hint hint) &optional parent-buffer)
+  (declare (ignore parent-buffer))
+  (echo "Unsupported operation for hint: can't open in new buffer."))
+
+(defmethod %follow-hint-nosave-buffer-focus ((link-hint link-hint))
+  (make-buffer-focus :url (url link-hint) :nosave-buffer-p t))
+
+(defmethod %follow-hint-nosave-buffer-focus ((hint hint))
+  (echo "Unsupported operation for hint: can't open in new buffer."))
+
+(defmethod %follow-hint-nosave-buffer ((link-hint link-hint))
+  (make-nosave-buffer :url (url link-hint)))
+
+(defmethod %follow-hint-nosave-buffer ((hint hint))
   (echo "Unsupported operation for hint: can't open in new buffer."))
 
 (defmethod %copy-hint-url ((link-hint link-hint))
@@ -369,18 +399,40 @@ currently active buffer."
 (define-command follow-hint-new-buffer (&key annotate-visible-only-p)
   "Show a set of element hints, and open the user inputted one in a new
 buffer (not set to visible active buffer)."
-  (query-hints "Open element in new buffer"
-               (lambda (result) (mapcar #'%follow-hint-new-buffer result))
-               :multi-selection-p t
-               :annotate-visible-only-p annotate-visible-only-p))
+  (let ((buffer (current-buffer)))
+    (query-hints "Open element in new buffer"
+                 (lambda (result) (mapcar (alex:rcurry #'%follow-hint-new-buffer buffer)
+                                          result))
+                 :multi-selection-p t
+                 :annotate-visible-only-p annotate-visible-only-p)))
 
 (define-command follow-hint-new-buffer-focus (&key annotate-visible-only-p)
   "Show a set of element hints, and open the user inputted one in a new
 visible active buffer."
+  (let ((buffer (current-buffer)))
+    (query-hints "Go to element in new buffer"
+                 (lambda (result)
+                   (%follow-hint-new-buffer-focus (first result) buffer)
+                   (mapcar (alex:rcurry #'%follow-hint-new-buffer buffer)
+                           (rest result)))
+                 :multi-selection-p t
+                 :annotate-visible-only-p annotate-visible-only-p)))
+
+(define-command follow-hint-nosave-buffer (&key annotate-visible-only-p)
+  "Show a set of element hints, and open the user inputted one in a new
+nosave buffer (not set to visible active buffer)."
+  (query-hints "Open element in new buffer"
+               (lambda (result) (mapcar #'%follow-hint-nosave-buffer result))
+               :multi-selection-p t
+               :annotate-visible-only-p annotate-visible-only-p))
+
+(define-command follow-hint-nosave-buffer-focus (&key annotate-visible-only-p)
+  "Show a set of element hints, and open the user inputted one in a new
+visible nosave active buffer."
   (query-hints "Go to element in new buffer"
                (lambda (result)
-                 (%follow-hint-new-buffer-focus (first result))
-                 (mapcar #'%follow-hint-new-buffer (rest result)))
+                 (%follow-hint-nosave-buffer-focus (first result))
+                 (mapcar #'%follow-hint-nosave-buffer (rest result)))
                :multi-selection-p t
                :annotate-visible-only-p annotate-visible-only-p))
 
@@ -411,14 +463,15 @@ visible active buffer."
 
 (define-command download-hint-url (&key annotate-visible-only-p)
   "Download the file under the URL(s) hinted by the user."
-  (query-hints "Download link URL"
-               (lambda (selected-links)
-                 (loop for link in selected-links
-                       ;; TODO: sleep should NOT be necessary to avoid breaking download
-                       do (download (quri:uri (url link))) (sleep 0.25))
-                 (list-downloads))
-               :multi-selection-p t
-               :annotate-visible-only-p annotate-visible-only-p))
+  (let ((buffer (current-buffer)))
+    (query-hints "Download link URL"
+                 (lambda (selected-links)
+                   (loop for link in selected-links
+                         ;; TODO: sleep should NOT be necessary to avoid breaking download
+                         do (download buffer (quri:uri (url link)))
+                            (sleep 0.25)))
+                 :multi-selection-p t
+                 :annotate-visible-only-p annotate-visible-only-p)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 (in-package :nyxt/minibuffer-mode)

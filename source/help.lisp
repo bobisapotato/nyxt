@@ -99,7 +99,7 @@
 
 (defun dump-command-descriptions (file)
   "Dump the command descriptions as an HTML file."
-  (with-open-file (f file :direction :output :if-exists :supersede)
+  (with-open-file (f file :direction :output :if-exists :overwrite)
     (format f "~a" (markup:markup
                     (:p "Listed below are the current commands, their
                          documentation, and their source. Non-command
@@ -392,7 +392,7 @@ This function can be used as a `window' `input-dispatcher'."
 The list of values is useful when the last result is multi-valued, e.g. (values 'a 'b).
 You need not wrap multiple values in a PROGN, all top-level expression are
 evaluate in order."
-  (let ((channel (make-bounded-channel 1)))
+  (let ((channel (make-channel 1)))
     (pexec ()
       (calispel:!
        channel
@@ -432,22 +432,6 @@ The version number is stored in the clipboard."
   (trivial-clipboard:text +version+)
   (echo "Version ~a" +version+))
 
-(define-command list-messages ()
-  "Show the *Messages* buffer."
-  (with-current-html-buffer (buffer "*Messages*" 'nyxt/message-mode:message-mode)
-    (markup:markup
-     (:style (style buffer))
-     (:h1 "Messages")
-     (:a :class "button"
-         :href (lisp-url '(nyxt::list-messages)) "Update")
-     (:a :class "button"
-         :href (lisp-url '(nyxt/message-mode:clear-messages)
-                         '(nyxt::list-messages))
-         "Clear")
-     (:ul
-      (loop for message in (reverse (messages-content *browser*))
-            collect (markup:markup (:li message)))))))
-
 (declaim (ftype (function (function-symbol &key (:modes list))) binding-keys))
 (defun binding-keys (fn &key (modes (if (current-buffer)
                                         (modes (current-buffer))
@@ -461,9 +445,10 @@ The version number is stored in the clipboard."
     (or (first (keymap:binding-keys fn keymaps))
         "UNBOUND")))
 
-(define-command help ()
+(define-command help (&key no-history-p)
   "Print help information."
-  (with-current-html-buffer (buffer "*Help*" 'nyxt/help-mode:help-mode)
+  (with-current-html-buffer (buffer "*Help*" 'nyxt/help-mode:help-mode
+                             :no-history-p no-history-p)
     (markup:markup
      (:style (style buffer))
      (:style (cl-css:css '((:h2
@@ -534,21 +519,11 @@ the "
 (define-command dashboard ()
   "Print a dashboard. Usable as a buffer-fn for make-startup-function."
   (flet ((list-bookmarks (&key (separator " → "))
-           (loop for bookmark in (get-data (bookmarks-path (current-buffer)))
-                 collect (markup:markup (:li (title bookmark) separator
-                                             (:a :href (object-string (url bookmark))
-                                                 (object-display (url bookmark)))))))
-         (list-history (&key (separator " → ") (limit 20))
-           (let* ((path (history-path (current-buffer)))
-                  (history (when (get-data path)
-                             (sort (alex:hash-table-values (get-data path))
-                                   #'local-time:timestamp>
-                                   :key #'last-access))))
-             (loop for item in (sera:take limit history)
-                   collect (markup:markup
-                            (:li (title item) (unless (str:emptyp (title item)) separator)
-                                 (:a :href (object-string (url item))
-                                     (object-string (url item)))))))))
+           (with-data-unsafe (bookmarks (bookmarks-path (current-buffer)))
+             (loop for bookmark in bookmarks
+                   collect (markup:markup (:li (title bookmark) separator
+                                               (:a :href (object-string (url bookmark))
+                                                   (object-display (url bookmark)))))))))
     (let ((dashboard-style (cl-css:css
                             '((body
                                :margin-top 0
@@ -587,4 +562,4 @@ the "
                      (:ul (list-bookmarks)))
                (:div :class "section" :style "flex: 5"
                      (:h3 "🗐 " (:b "Recent URLs"))
-                     (:ul (list-history)))))))))
+                     (:ul (history-html-list)))))))))

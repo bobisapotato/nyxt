@@ -149,6 +149,7 @@ Example: --with-path bookmarks=/path/to/bookmarks
   (loop for window in (window-list)
         do (ffi-window-delete window))
   (ffi-kill-browser *browser*)
+  (setf (slot-value *browser* 'ready-p) nil)
   (when (socket-thread *browser*)
     (ignore-errors
      (bt:destroy-thread (socket-thread *browser*)))
@@ -161,9 +162,9 @@ Example: --with-path bookmarks=/path/to/bookmarks
   (unless *keep-alive*
     (uiop:quit 0 nil)))
 
-(define-command quit-after-clearing-session ()
-  "Clear session then quit Nyxt."
-  (uiop:delete-file-if-exists (expand-path (session-path (current-buffer))))
+(define-command quit-after-clearing-session () ; TODO: Rename?
+  "Close all buffers then quit Nyxt."
+  (delete-buffers)
   (quit))
 
 (define-command start-swank (&optional (swank-port *swank-port*))
@@ -279,22 +280,22 @@ To change the default buffer, e.g. set it to a given URL:
   (make-startup-function
    :buffer-fn (lambda () (make-buffer :url \"https://example.org\")))"
   (lambda (&optional urls)
-    (let ((buffer (current-buffer)))
-      ;; Restore session before opening command line URLs, otherwise it will
-      ;; reset the session with the new URLs.
-      (when (and (expand-path (session-path buffer))
-                 (session-list buffer))
-        (match (session-restore-prompt *browser*)
-          ;; Need `funcall-safely' so we continue if the user exits the
-          ;; minibuffer (which raises a condition).
-          (:always-ask (funcall-safely #'restore-session-by-name))
-          (:always-restore (funcall-safely #'restore (data-profile buffer)
-                                           (session-path buffer)))
-          (:never-restore (log:info "Not restoring session."))))
-      (cond
-        (urls (open-urls urls))
-        (buffer-fn
-         (window-set-active-buffer (current-window) (funcall-safely buffer-fn)))))
+    (let ((window (current-window)))
+      ;; Since this is the first buffer, we don't use any history for it:
+      ;; - it's not interesting;
+      ;; - most importantly because restoring the history may prompt the
+      ;; user which blocks further action such as the loading of the page,
+      ;; something we don't want for the startup.
+      (window-set-active-buffer window (help :no-history-p t))
+      (let ((buffer (current-buffer)))
+        ;; Restore session before opening command line URLs, otherwise it will
+        ;; reset the session with the new URLs.
+        ;; TODO: Select which history file to load.
+        (get-user-data (data-profile buffer) (history-path buffer))
+        (cond
+          (urls (open-urls urls))
+          (buffer-fn
+           (window-set-active-buffer window (funcall-safely buffer-fn))))))
     (when (startup-error-reporter-function *browser*)
       (funcall-safely (startup-error-reporter-function *browser*)))))
 
@@ -311,13 +312,6 @@ short as possible."
    (lambda () (open-urls urls)))
   urls)
 
-(defun set-socket-permissions (socket-path)
-  "Make socket only readable and writable by the current user."
-  #+darwin
-  (uiop:run-program (list "chmod" "600" socket-path))
-  #-darwin
-  (setf (osicat:file-permissions socket-path) '(:user-read :user-write)))
-
 (defun listen-socket ()
   (let ((socket-path (expand-path *socket-path*)))
     (when socket-path
@@ -327,8 +321,8 @@ short as possible."
                                  :connect :passive
                                  :local-filename socket-path)
         ;; We don't want group members or others to flood the socket or, worse,
-        ;; execute code.
-        (set-socket-permissions socket-path)
+        ;; execute code. 600 gives permissions only for the current user
+        (set-socket-permissions socket-path "600")
         ;; Since we are in a separate thread, we need to set the default package
         ;; for remote execution.
         (in-package :nyxt-user)

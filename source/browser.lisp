@@ -21,14 +21,14 @@ Example: \"http://192.168.1.254:8080\".")
                         :documentation "Non-nil if downloads should also use the proxy."))
   (:export-class-name-p t)
   (:export-accessor-names-p t)
-  (:accessor-name-transformer #'class*:name-identity)
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name))
   (:documentation "Enable forwarding of all network requests to a specific host.
 This can apply to specific buffer."))
 
 (export-always 'combine-composed-hook-until-nil)
 (defmethod combine-composed-hook-until-nil ((hook hooks:hook) &optional arg)
   "Return the result of the composition of the HOOK handlers on ARG, from
-oldest to youngest.  Stop processsing when a handler returns nil.
+oldest to youngest.  Stop processing when a handler returns nil.
 Without handler, return ARG.  This is an acceptable `combination' for
 `hook'."
   (labels ((compose-handlers (handlers result)
@@ -55,10 +55,9 @@ under your user profile.")
                   :documentation "Thread that listens on socket.
 See `*socket-path*'.
 This slot is mostly meant to clean up the thread if necessary.")
-   (password-interface (password:make)
+   (password-interface (make-password-interface)
                        :export nil)
    (messages-content '()
-                     :export nil
                      :documentation "A list of all echoed messages.
 Most recent messages are first.")
    (clipboard-ring (make-ring)
@@ -81,7 +80,7 @@ Warning: This setting may be deprecated in a future release, don't rely on it.")
                        :export nil
                        :documentation "This is used to generate unique window
 identifiers in `get-unique-window-identifier'.  We can't rely on the windows
-count since deleting windows may reseult in duplicate identifiers.")
+count since deleting windows may result in duplicate identifiers.")
    (last-active-window nil
                        :type (or window null)
                        :export nil
@@ -110,18 +109,20 @@ arguments).  It is run after the renderer has been initialized, after the
 if there are errors, they will be reported by this function.")
    (open-external-link-in-new-window-p nil
                                        :documentation "When open links from an external program, or
-when C-cliking on a URL, decide whether to open in a new
+when C-clicking on a URL, decide whether to open in a new
 window or not.")
-   (download-watcher nil
-                     :type t
-                     :export nil
-                     :documentation "List of downloads.")
+   (downloads
+    :documentation "List of downloads. Used for rendering by download manager.")
    (startup-timestamp (local-time:now)
                       :export nil
                       :documentation "`local-time:timestamp' of when Nyxt was started.")
    (init-time 0.0
               :export nil
-              :documentation "Init time in seconds.")
+              :documentation "Initialization time in seconds.")
+   (ready-p nil
+            :reader ready-p
+            :documentation "If true, browser is ready for operation: make
+buffers, load data files, prompt minibuffer, etc.")
    (session-restore-prompt :always-ask
                            :documentation "Ask whether to restore the
 session. Possible values are :always-ask :always-restore :never-restore.")
@@ -182,13 +183,13 @@ editing files. It should be specified as a complete string path to the
 editor executable."))
   (:export-class-name-p t)
   (:export-accessor-names-p t)
-  (:accessor-name-transformer #'class*:name-identity))
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name)))
 
 (define-user-class browser)
 
 (defun %get-user-data (profile path cache)
   (sera:and-let* ((expanded-path (expand-path path)))
-    (multiple-value-bind  (user-data found?)
+    (multiple-value-bind (user-data found?)
         (gethash expanded-path cache)
       (if found?
           user-data
@@ -217,8 +218,7 @@ editor executable."))
       (log:error "In *after-init-hook*: ~a" c)))
   ;; Most of the code assumes the existence of a window.  Let's create it here
   ;; so that the user does not have to bother with it in the `startup-function'.
-  (let ((window (window-make browser)))
-    (window-set-active-buffer window (help)))
+  (window-make browser)
   ;; The `startup-function' must be run _after_ this function returns;
   ;; `ffi-within-renderer-thread' runs its body on the renderer thread when it's
   ;; idle, so it should do the job.  It's not enough since the
@@ -233,7 +233,8 @@ editor executable."))
   ;; Set 'init-time at the end of finalize to take the complete startup time
   ;; into account.
   (setf (slot-value *browser* 'init-time)
-        (local-time:timestamp-difference (local-time:now) startup-timestamp)))
+        (local-time:timestamp-difference (local-time:now) startup-timestamp))
+  (setf (slot-value *browser* 'ready-p) t))
 
 ;; Catch a common case for a better error message.
 (defmethod buffers :before ((browser t))
@@ -241,64 +242,59 @@ editor executable."))
     (error "There is no current *browser*. Is Nyxt started?")))
 
 
-(defun download-watch ()
+(defun download-watch (download-render download-object)
   "Update the *Downloads* buffer.
-This function is meant to be run in the background."
-  ;; TODO: Add a (sleep ...)?  If we have many downloads, this loop could result
-  ;; in too high a frequency of refreshes.
+This function is meant to be run in the background. There is a
+potential thread starvation issue if one thread consumes all
+messages. If in practice this becomes a problem, we should poll on
+each thread until the completion percentage is 100 OR a timeout is
+reached (during which no new progress has been made)."
   (when download-manager:*notifications*
     (loop for d = (calispel:? download-manager:*notifications*)
           while d
           when (download-manager:finished-p d)
             do (hooks:run-hook (after-download-hook *browser*))
-          do (let ((buffer (find-buffer 'download-mode)))
-               ;; Only update if buffer exists.  We update even when out of focus
-               ;; because if we switch to the buffer after all downloads are
-               ;; completed, we won't receive notifications so the content needs
-               ;; to be updated already.
-               ;; TODO: Disable when out of focus?  Maybe need hook for that.
-               (when buffer
-                 (ffi-within-renderer-thread *browser* #'download-refresh))))))
+          do (sleep 0.1) ; avoid excessive polling
+             (setf (completion-percentage download-render)
+                   (* 100 (/ (download-manager:bytes-fetched download-object)
+                             (max 1 (download-manager:bytes-total download-object))))))))
 
 ;; TODO: To download any URL at any moment and not just in resource-query, we
 ;; need to query the cookies for URL.  Thus we need to add an IPC endpoint to
 ;; query cookies.
-(declaim (ftype (function (quri:uri &key
-                                    (:cookies (or string null))
-                                    (:proxy-address t))
-                          (values (or null download-manager:download) &rest t))
-                download))
 (export-always 'download)
-(defun download (url &key
-                       cookies
-                       (proxy-address :auto))
+(defmethod download ((buffer buffer) url &key cookies (proxy-address :auto))
   "Download URL.
 When PROXY-ADDRESS is :AUTO (the default), the proxy address is guessed from the
 current buffer."
   (hooks:run-hook (before-download-hook *browser*) url) ; TODO: Set URL to download-hook result?
-  (when (eq proxy-address :auto)
-    (setf proxy-address (proxy-address (current-buffer)
-                                       :downloads-only t)))
-  (let* ((path (download-path (current-buffer)))
-         (download-dir (expand-path path)))
-    (declare (type (or quri:uri null) proxy-address))
-    (when download-dir
-      (let* ((download nil))
-        (flet ((unsafe-download ()
-                 (setf download (download-manager:resolve
-                                 url
-                                 :directory download-dir
-                                 :cookies cookies
-                                 :proxy proxy-address))
-                 (push download (get-data path))
-                 download))
-          (if *keep-alive*
-              (unsafe-download)
-              (handler-case
-                  (unsafe-download)
-                (error (c)
-                  (echo-warning "Download error: ~a" c)
-                  nil))))))))
+  (match (download-engine buffer)
+    (:lisp
+     (alex:when-let* ((path (download-path buffer))
+                      (download-dir (expand-path path)))
+       (when (eq proxy-address :auto)
+         (setf proxy-address (proxy-address buffer :downloads-only t)))
+       (let* ((download nil))
+         (with-muffled-body ("Download error: ~a" :condition)
+           (with-data-access (downloads path)
+             (setf download
+                   (download-manager:resolve url
+                                             :directory download-dir
+                                             :cookies cookies
+                                             :proxy proxy-address))
+             (push download downloads)
+             ;; Add a watcher / renderer for monitoring download
+             (let ((download-render (make-instance 'download :uri (object-string url))))
+               (setf (destination-path download-render)
+                     (download-manager:filename download))
+               (push download-render (downloads *browser*))
+               (bt:make-thread
+                (lambda ()
+                  (download-watch download-render download))))
+             download)))))
+    (:renderer
+     (ffi-buffer-download buffer (object-string url))))
+  (list-downloads))
 
 (defmethod get-unique-window-identifier ((browser browser))
   (format nil "~s" (incf (slot-value browser 'total-window-count))))
@@ -322,20 +318,19 @@ This is useful to tell REPL instances from binary ones."
                                        url))))
 
 (declaim (ftype (function (list-of-strings &key (:no-focus boolean)))))
-(defun open-urls (urls &key no-focus)
+(defun open-urls (urls &key no-focus parent-buffer)
   "Create new buffers from URLs.
 First URL is focused if NO-FOCUS is nil."
-  (handler-case
-      (let ((first-buffer (first (mapcar
-                                  (lambda (url) (make-buffer :url url))
-                                  urls))))
-        (when (and first-buffer (not no-focus))
-          (if (open-external-link-in-new-window-p *browser*)
-              (let ((window (window-make *browser*)))
-                (window-set-active-buffer window first-buffer))
-              (set-current-buffer first-buffer))))
-    (error (c)
-      (echo-warning "Could not make buffer to open ~a: ~a" urls c))))
+  (with-muffled-body ("Could not make buffer to open ~a: ~a" urls :condition)
+    (let ((first-buffer (first (mapcar
+                                (lambda (url) (make-buffer :url url
+                                                           :parent-buffer parent-buffer))
+                                urls))))
+      (when (and first-buffer (not no-focus))
+        (if (open-external-link-in-new-window-p *browser*)
+            (let ((window (window-make *browser*)))
+              (window-set-active-buffer window first-buffer))
+            (set-current-buffer first-buffer))))))
 
 (defun scheme-keymap (buffer buffer-scheme)
   "Return the keymap in BUFFER-SCHEME corresponding to the BUFFER `keymap-scheme-name'.
@@ -345,16 +340,16 @@ If none is found, fall back to `scheme:cua'."
       (keymap:get-keymap scheme:cua
                          buffer-scheme)))
 
-(defun request-resource-open-url (&key url &allow-other-keys)
-  (open-urls (list url) :no-focus t))
+(defun request-resource-open-url (&key url buffer &allow-other-keys)
+  (open-urls (list url) :no-focus t :parent-buffer buffer))
 
-(defun request-resource-open-url-focus (&key url &allow-other-keys)
-  (open-urls (list url) :no-focus nil))
+(defun request-resource-open-url-focus (&key url buffer &allow-other-keys)
+  (open-urls (list url) :no-focus nil :parent-buffer buffer))
 
 (define-class request-data ()
   ((buffer (current-buffer)
            :type buffer
-           :documentation "Buffer targetted by the request.")
+           :documentation "Buffer targeted by the request.")
    (url (quri:uri "")
         :documentation "URL of the request")
    (event-type :other
@@ -362,16 +357,17 @@ If none is found, fall back to `scheme:cua'."
                :export nil
                :documentation "The type of request, e.g. `:link-click'.")
    (new-window-p nil
-                 :documentation "Whether the request wants to happen in a new window.")
+                 :documentation "Whether the request takes place in a
+new window.")
    (known-type-p nil
-                 :documentation "Whether the request is for a contented with
-supported MIME-type (e.g. a picture that can be displayed in
-the web view.")
+                 :documentation "Whether the request is for content with
+supported MIME-type, such as a picture that can be displayed in the web
+view.")
    (keys '()
-         :documentation "The key sequence that was pressed to generate the request."))
+         :documentation "The key sequence that generated the request."))
   (:export-class-name-p t)
   (:export-accessor-names-p t)
-  (:accessor-name-transformer #'class*:name-identity))
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name)))
 
 (export-always 'request-resource)
 (defun request-resource (request-data)
@@ -398,7 +394,7 @@ Deal with REQUEST-DATA with the following rules:
          nil)
         (bound-function
          (log:debug "Resource request key sequence ~a" (keyspecs-with-optional-keycode keys))
-         (funcall-safely bound-function :url url)
+         (funcall-safely bound-function :url url :buffer buffer)
          nil)
         ((new-window-p request-data)
          (log:debug "Load URL in new buffer: ~a" (object-display url))
@@ -406,13 +402,12 @@ Deal with REQUEST-DATA with the following rules:
          nil)
         ((not (known-type-p request-data))
          (log:debug "Buffer ~a initiated download of ~s." (id buffer) (object-display url))
-         (download url :proxy-address (proxy-address buffer :downloads-only t)
-                       :cookies "")
-         (unless (find-buffer 'download-mode)
-           (list-downloads))
+         (download buffer url
+                   :proxy-address (proxy-address buffer :downloads-only t)
+                   :cookies "")
          nil)
         (t
-         (log:debug "Forwarding: ~a" (object-display url))
+         (log:debug "Forwarding ~a for buffer ~s" (object-display url) buffer)
          request-data)))))
 
 (export-always 'url-dispatching-handler)
@@ -548,7 +543,7 @@ The following example does a few things:
   "Return the currently active window.
 If NO-RESCAN is non-nil, fetch the window from the `last-active-window' cache
 instead of asking the renderer for the active window.  It is faster but
-sometimes yields the wrong reasult."
+sometimes yields the wrong result."
   (when *browser*
     (if (and no-rescan (slot-value *browser* 'last-active-window))
         (slot-value *browser* 'last-active-window)
@@ -591,10 +586,11 @@ sometimes yields the wrong reasult."
                    :if-does-not-exist :create
                    :if-exists :append))))))
 
-(defmacro define-ffi-generic (name arguments)
+(defmacro define-ffi-generic (name arguments &body options)
   `(progn
      (export-always ',name)
-     (defgeneric ,name (,@arguments))))
+     (defgeneric ,name (,@arguments)
+       ,@options)))
 
 (define-ffi-generic ffi-window-delete (window))
 (define-ffi-generic ffi-window-fullscreen (window))
@@ -628,6 +624,15 @@ sometimes yields the wrong reasult."
 (define-ffi-generic ffi-buffer-user-agent (buffer value))
 (define-ffi-generic ffi-buffer-set-proxy (buffer &optional proxy-uri ignore-hosts))
 (define-ffi-generic ffi-buffer-get-proxy (buffer))
+(define-ffi-generic ffi-buffer-download (buffer uri))
+(define-ffi-generic ffi-buffer-set-zoom-level (buffer value)
+  (:method ((buffer buffer) value)
+    (pflet ((zoom ()
+              (ps:let ((style (ps:chain document body style)))
+                (setf (ps:@ style zoom)
+                      (ps:lisp (current-zoom-ratio (current-buffer)))))))
+      (with-current-buffer buffer
+        (zoom)))))
 (define-ffi-generic ffi-generate-input-event (window event))
 (define-ffi-generic ffi-generated-input-event-p (window event))
 (define-ffi-generic ffi-within-renderer-thread (browser thunk))

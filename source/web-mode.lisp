@@ -4,7 +4,7 @@
 (uiop:define-package :nyxt/web-mode
   (:use :common-lisp :trivia :nyxt)
   (:import-from #:keymap #:define-key #:define-scheme)
-  (:import-from #:class* #:define-class)
+  (:import-from #:class-star #:define-class)
   (:documentation "Mode for web pages"))
 (in-package :nyxt/web-mode)
 (eval-when (:compile-toplevel :load-toplevel :execute)
@@ -15,13 +15,11 @@
 ;; This is required because special buffers cannot be part of a history (and it breaks it).
 ;; Bind C-l to set-url-new-buffer?  Wait: What if we click on a link?  url
 ;; changes in special buffers should open a new one.
-;; Or else we require that all special-buffer-generting commands open a new buffer.
+;; Or else we require that all special-buffer-generating commands open a new buffer.
 
 (define-mode web-mode ()
   "Base mode for interacting with documents."
-  ((history (htree:make)
-            :type htree:history-tree)
-   (history-blocklist '("https://duckduckgo.com/l/")
+  ((history-blocklist '("https://duckduckgo.com/l/")
                       ;; TODO: Find a more automated way to do it.  WebKitGTK
                       ;; automatically removes such redirections from its
                       ;; history.  How?
@@ -30,6 +28,29 @@
 Example: DuckDuckGo redirections should be ignored or else going backward in
 history after consulting a result reloads the result, not the duckduckgo
 search.")
+   (conservative-history-movement-p
+    nil
+    :type boolean
+    :documentation "Whether history navigation is restricted by buffer-local history.")
+   (box-style (cl-css:css
+               '((".nyxt-hint"
+                  :background "linear-gradient(#fcff9e, #efcc00)"
+                  :color "black"
+                  :border "1px black solid"
+                  :padding "1px 3px 1px 3px"
+                  :border-radius "2px"
+                  :z-index #.(1- (expt 2 31)))))
+              :documentation "The style of the boxes, e.g. link hints.")
+   (highlighted-box-style (cl-css:css
+                           '((".nyxt-hint.nyxt-highlight-hint"
+                              :font-weight "500"
+                              :background "#fcff9e")))
+                          :documentation "The style of highlighted boxes, e.g. link hints.")
+   (hints-alphabet "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                   :type string
+                   :documentation "The alphabet (charset) to use for hints.
+Order matters -- the ones that go first are more likely to appear more often
+and to index the top of the page.")
    (keymap-scheme
     (define-scheme "web"
       scheme:cua
@@ -47,6 +68,8 @@ search.")
        "C-g" 'follow-hint
        "M-g" 'follow-hint-new-buffer-focus
        "C-u M-g" 'follow-hint-new-buffer
+       "C-M-g" 'follow-hint-nosave-buffer-focus
+       "C-u C-M-g" 'follow-hint-nosave-buffer
        "C-x C-w" 'copy-hint-url
        "C-c" 'copy
        "button9" 'history-forwards
@@ -69,7 +92,7 @@ search.")
        "C-up" 'scroll-to-top
        "C-i" 'autofill
        "C-c '" 'fill-input-from-external-editor
-       ;; Leave SPACE and arrow keys unbound so that the renderer decides wether to
+       ;; Leave SPACE and arrow keys unbound so that the renderer decides whether to
        ;; navigate textboxes (arrows), insert or scroll (space).
        "pageup" 'scroll-page-up
        "pagedown" 'scroll-page-down
@@ -98,6 +121,8 @@ search.")
        "M-g g" 'follow-hint-new-buffer-focus
        "C-u M-g M-g" 'follow-hint-new-buffer
        "C-u M-g g" 'follow-hint-new-buffer
+       "C-M-g C-M-g" 'follow-hint-nosave-buffer-focus
+       "C-M-g g" 'follow-hint-nosave-buffer
        "C-x C-w" 'copy-hint-url
        "C-y" 'paste
        "M-w" 'copy
@@ -131,6 +156,8 @@ search.")
        "f" 'follow-hint
        "F" 'follow-hint-new-buffer-focus
        "; f" 'follow-hint-new-buffer
+       "g f" 'follow-hint-nosave-buffer
+       "g F" 'follow-hint-nosave-buffer-focus
        "button9" 'history-forwards
        "button8" 'history-backwards
        "+" 'zoom-in-page
@@ -155,6 +182,9 @@ search.")
        "s-space" 'scroll-page-up
        "pageup" 'scroll-page-up
        "pagedown" 'scroll-page-down)))))
+
+(defun current-web-mode ()
+  (find-submode (current-buffer) 'web-mode))
 
 (sera:export-always '%clicked-in-input?)
 (define-parenscript %clicked-in-input? ()
@@ -182,7 +212,8 @@ search.")
       (if (and (input-tag-p response) url-empty)
           (funcall-safely #'paste)
           (unless url-empty
-            (make-buffer-focus :url (url-at-point buffer)))))))
+            (make-buffer-focus :url (url-at-point buffer)
+                               :nosave-buffer-p (nosave-buffer-p buffer)))))))
 
 (define-command maybe-scroll-to-bottom (&optional (buffer (current-buffer)))
   "Scroll to bottom if no input element is active, forward event otherwise."
@@ -192,192 +223,229 @@ search.")
   "Scroll to top if no input element is active, forward event otherwise."
   (call-non-input-command-or-forward #'scroll-to-top :buffer buffer))
 
-(declaim (ftype (function (htree:node &optional buffer)) set-url-from-history))
-(defun set-url-from-history (history-node &optional (buffer (current-buffer)))
+(defun load-history-url (url-or-node
+                         &key (buffer (current-buffer))
+                           (message "History entry is already the current URL."))
   "Go to HISTORY-NODE's URL."
-  (let ((history (history (find-submode buffer 'web-mode))))
-    (if (eq history-node (htree:current history))
-        (echo "History entry is already the current URL.")
-        (progn
-          (setf (htree:current history) history-node)
-          (buffer-load (url (htree:data history-node)))))))
+  (unless (quri:uri-p url-or-node)
+    (setf url-or-node (url (htree:data url-or-node))))
+  (if (quri:uri= url-or-node (url buffer))
+      (echo message)
+      (buffer-load url-or-node)))
 
 (define-command history-backwards (&optional (buffer (current-buffer)))
   "Go to parent URL in history."
-  (let* ((mode (find-submode buffer 'web-mode)))
-    (if (eq (htree:root (history mode)) (htree:current (history mode)))
-        (echo "No backward history.")
-        (progn
-          (htree:back (history mode))
-          (match (htree:current (history mode))
-            ((guard n n) (buffer-load (url (htree:data n)))))))))
+  (let ((new-node
+          (with-data-access (history (history-path buffer))
+            (if (conservative-history-movement-p (find-mode buffer 'web-mode))
+                (htree:backward-owned-parents history)
+                (htree:backward history))
+            (htree:current-owner-node history))))
+    (load-history-url new-node
+                      :message "No backward history.")))
 
 (define-command history-forwards (&optional (buffer (current-buffer)))
   "Go to forward URL in history."
-  (let* ((mode (find-submode buffer 'web-mode)))
-    (if (htree:children-nodes (history mode))
-        (progn
-          (htree:forward (history mode))
-          (match (htree:current (history mode))
-            ((guard n n) (buffer-load (url (htree:data n))))))
-        (echo "No forward history."))))
+  (let ((new-node
+          (with-data-access (history (history-path buffer))
+            (htree:forward history)
+            (htree:current-owner-node history))))
+    (load-history-url new-node
+                      :message "No forward history.")))
 
-(defun history-backwards-suggestion-filter (&optional (mode (find-submode
-                                                             (current-buffer)
-                                                             'web-mode)))
+(defun history-backwards-suggestion-filter (&optional (buffer (current-buffer)))
   "Suggestion function over all parent URLs."
-  (let ((parents (htree:parent-nodes (history mode))))
+  (with-data-unsafe (parents (history-path buffer)
+                     :key (if (conservative-history-movement-p (find-mode buffer 'web-mode))
+                              #'htree:all-contiguous-owned-parents
+                              #'htree:all-parents))
     (lambda (minibuffer)
       (if parents
           (fuzzy-match (input-buffer minibuffer) parents)
-          (error "Cannot navigate backwards.")))))
+          (echo "Cannot navigate backwards.")))))
 
-(define-command history-backwards-query ()
+(define-command history-backwards-query (&optional (buffer (current-buffer)))
   "Query parent URL to navigate back to."
   (let ((input (prompt-minibuffer
                 :input-prompt "Navigate backwards to"
                 :suggestion-function (history-backwards-suggestion-filter))))
     (when input
-      (set-url-from-history input))))
+      (with-data-access (history (history-path buffer))
+        ;; See `history-forwards-query' comment.
+        (loop until (eq input (htree:current-owner-node history))
+              do (htree:backward history)))
+      (load-history-url input))))
 
-(defun history-forwards-suggestion-filter (&optional (mode (find-submode
-                                                            (current-buffer)
-                                                            'web-mode)))
+(defun history-forwards-direct-children-suggestion-filter (&optional (buffer (current-buffer)))
   "Suggestion function over forward-children URL."
-  (let ((children (htree:forward-children-nodes (history mode))))
+  (with-data-unsafe (children (history-path buffer)
+                     :key (if (conservative-history-movement-p (find-mode buffer 'web-mode))
+                              (alex:compose #'htree:owned-children #'htree:current-owner)
+                              (alex:compose #'htree:children #'htree:current-owner-node)))
     (lambda (minibuffer)
       (if children
           (fuzzy-match (input-buffer minibuffer) children)
-          (error "Cannot navigate forwards.")))))
+          (echo "Cannot navigate forwards.")))))
 
-(define-command history-forwards-query ()
+(define-command history-forwards-direct-children (&optional (buffer (current-buffer)))
+  "Query child URL to navigate to."
+  (let ((input (prompt-minibuffer
+                :input-prompt "Navigate forwards to"
+                :suggestion-function (history-forwards-direct-children-suggestion-filter))))
+    (when input
+      (with-data-access (history (history-path buffer))
+        (htree:go-to-child (htree:data input) history))
+      (load-history-url input))))
+
+(define-command history-forwards-maybe-query (&optional (buffer (current-buffer)))
+  "If current node has multiple children, query which one to navigate to.
+Otherwise go forward to the only child."
+  (let ((history (get-data (history-path buffer))))
+    (if (<= 2 (length
+               (if (conservative-history-movement-p (find-mode buffer 'web-mode))
+                   (htree:owned-children (htree:current-owner history))
+                   (htree:children (htree:current-owner-node history)))))
+        (history-forwards-direct-children)
+        (history-forwards))))
+
+(defun history-forwards-suggestion-filter (&optional (buffer (current-buffer)))
+  "Suggestion function over forward-children URL."
+  (with-data-unsafe (children (history-path buffer)
+                     :key #'htree:all-forward-children)
+    (lambda (minibuffer)
+      (if children
+          (fuzzy-match (input-buffer minibuffer) children)
+          (echo "Cannot navigate forwards.")))))
+
+(define-command history-forwards-query (&optional (buffer (current-buffer)))
   "Query forward-URL to navigate to."
   (let ((input (prompt-minibuffer
                 :input-prompt "Navigate forwards to"
                 :suggestion-function (history-forwards-suggestion-filter))))
     (when input
-      (set-url-from-history input))))
+      (with-data-access (history (history-path buffer))
+        ;; REVIEW: Alternatively, we could use the COUNT argument with
+        ;; (1+ (position input (htree:all-forward-children history)))
+        ;; Same with `history-backwards-query'.
+        (loop until (eq input (htree:current-owner-node history))
+                    do (htree:forward history)))
+      (load-history-url input))))
 
-(define-command history-forwards-maybe-query (&optional (mode (find-submode
-                                                               (current-buffer)
-                                                               'web-mode)))
-  "If current node has multiple chidren, query forward-URL to navigate to.
-Otherwise go forward to the only child."
-  (if (<= 2 (length (htree:children-nodes (history mode))))
-      (history-forwards-all-query)
-      (history-forwards)))
-
-(defun history-forwards-all-suggestion-filter (&optional (mode (find-submode
-                                                                (current-buffer)
-                                                                'web-mode)))
+(defun history-forwards-all-suggestion-filter (&optional (buffer (current-buffer)))
   "Suggestion function over children URL from all branches."
-  (let ((children (htree:children-nodes (history mode))))
+  (with-data-unsafe (children (history-path buffer)
+                     :key (if (conservative-history-movement-p (find-mode buffer 'web-mode))
+                              (alex:compose #'htree:all-contiguous-owned-children #'htree:current-owner)
+                              #'htree:all-children))
     (lambda (minibuffer)
       (if children
           (fuzzy-match (input-buffer minibuffer) children)
-          (error "Cannot navigate forwards.")))))
+          (echo "Cannot navigate forwards.")))))
 
-(define-command history-forwards-all-query ()
+(define-command history-forwards-all-query (&optional (buffer (current-buffer)))
   "Query URL to forward to, from all child branches."
   (let ((input (prompt-minibuffer
                 :input-prompt "Navigate forwards to (all branches)"
                 :suggestion-function (history-forwards-all-suggestion-filter))))
     (when input
-      (set-url-from-history input))))
+      (with-data-access (history (history-path buffer))
+        (htree:forward history))
+      (load-history-url input))))
 
-(defun history-all-suggestion-filter (&optional (mode (find-submode
-                                                       (current-buffer)
-                                                       'web-mode)))
+(defun history-all-suggestion-filter (&optional (buffer (current-buffer)))
   "Suggestion function over all history URLs."
-  (let ((urls (htree:all-nodes (history mode))))
+  (with-data-unsafe (urls (history-path buffer)
+                     :key (if (conservative-history-movement-p (find-mode buffer 'web-mode))
+                              #'htree:all-current-owner-nodes
+                              #'htree:all-current-branch-nodes))
     (lambda (minibuffer)
       (if urls
           (fuzzy-match (input-buffer minibuffer) urls)
-          (error "No history.")))))
+          (echo "No history.")))))
 
-(define-command history-all-query ()
+(define-command history-all-query (&optional (buffer (current-buffer)))
   "Query URL to go to, from the whole history."
   (let ((input (prompt-minibuffer
                 :input-prompt "Navigate to"
                 :suggestion-function (history-all-suggestion-filter))))
     (when input
-      (set-url-from-history input))))
+      (with-data-access (history (history-path buffer))
+        (htree:visit-all history input))
+      (load-history-url input))))
 
 (define-command buffer-history-tree (&optional (buffer (current-buffer)))
+  "Open a new buffer displaying the whole history tree of a buffer."
+  (with-current-html-buffer (output-buffer (format nil "*History-~a*" (id buffer))
+                                                 'nyxt/history-tree-mode:history-tree-mode)
+    (with-data-unsafe (history (history-path buffer))
+      (let* ((markup:*auto-escape* nil)
+             (mode (find-submode output-buffer 'nyxt/history-tree-mode:history-tree-mode))
+             (tree `(:ul ,(htree:map-owned-tree
+                           #'(lambda (node)
+                               `(:li
+                                 (:a :href ,(object-string (url (htree:data node)))
+                                     ,(let ((title (or (match (title (htree:data node))
+                                                         ((guard e (not (str:emptyp e))) e))
+                                                       (object-display (url (htree:data node))))))
+                                        (if (eq node (htree:current-owner-node history))
+                                            `(:b ,title)
+                                            title)))))
+                           history
+                           :include-root t
+                           :collect-function #'(lambda (a b) `(,@a ,(when b `(:ul ,@b))))))))
+        (markup:markup
+         (:body (:h1 "History")
+                (:style (style output-buffer))
+                (:style (style mode))
+                (:div (markup:raw
+                       (markup:markup*
+                        tree)))))))))
+
+(define-command history-tree ()         ; TODO: Factor this with `buffer-history-tree'.
   "Open a new buffer displaying the whole history tree."
-  (labels ((traverse (node current)
-             (when node
-               `(:li (:a :href ,(object-string (url (htree:data node)))
-                         ,(let ((title (or (match (title (htree:data node))
-                                             ((guard e (not (str:emptyp e))) e))
-                                           (object-display (url (htree:data node))))))
-                            (if (eq node current)
-                                `(:b ,title)
-                                title)))
-                     ,(match (mapcar (lambda (n) (traverse n current))
-                                     (htree:children node))
-                        ((guard l l) `(:ul ,@l)))))))
-    (let* ((buffer-name (format nil "*History-~a*" (id buffer)))
-           (output-buffer (or (find-if (lambda (b) (string= buffer-name (title b)))
-                                       (buffer-list))
-                              (nyxt/help-mode:help-mode
-                               :activate t
-                               :buffer (make-internal-buffer :title buffer-name))))
-           (history (history (find-submode buffer 'web-mode)))
-           (tree `(:ul ,(traverse (htree:root history)
-                                  (htree:current history))))
-           (tree-style
-             (cl-css:css
-              '((body
-                 :line-height "initial")
-                (* :margin 0
-                   :padding 0
-                   :list-style "none")
-                ("ul li"
-                 :margin-left "15px"
-                 :position "relative"
-                 :padding-left "5px")
-                ("ul li::before"
-                 :content "' '"
-                 :position "absolute"
-                 :width "1px"
-                 :background-color "#000"
-                 :top "5px"
-                 :bottom "-12px"
-                 :left "-10px")
-                ("body > ul > li:first-child::before"
-                 :top "12px")
-                ("ul li:not(:first-child):last-child::before"
-                 :display "none")
-                ("ul li:only-child::before"
-                 :display "list-item"
-                 :content "' '"
-                 :position "absolute"
-                 :width "1px"
-                 :background-color "#000"
-                 :top "5px"
-                 :bottom "7px"
-                 :height "7px"
-                 :left "-10px")
-                ("ul li::after"
-                 :content "' '"
-                 :position "absolute"
-                 :left "-10px"
-                 :width "10px"
-                 :height "1px"
-                 :background-color "#000"
-                 :top "12px"))))
-           (content (markup:markup
-                     (:body (:h1 "History")
-                            (:style (style output-buffer))
-                            (:style (markup:raw tree-style))
-                            (:div (markup:raw
-                                   (markup:markup*
-                                    tree))))))
-           (insert-content (ps:ps (setf (ps:@ document body |innerHTML|)
-                                        (ps:lisp content)))))
-      (ffi-buffer-evaluate-javascript-async output-buffer insert-content)
-      (set-current-buffer output-buffer))))
+  (nyxt::with-current-html-buffer (output-buffer "*History*"
+                                                 'nyxt/history-tree-mode:history-tree-mode)
+    (with-data-unsafe (history (let ((dummy-buffer (make-buffer)))
+                                 (prog1
+                                     (history-path dummy-buffer)
+                                   (delete-buffer :id (id dummy-buffer)))))
+      (let ((markup:*auto-escape* nil)
+            (mode (find-submode output-buffer 'nyxt/history-tree-mode:history-tree-mode))
+            (tree `(:ul ,(htree:map-tree
+                          #'(lambda (node)
+                              `(:li (:a :href ,(object-string (url (htree:data node)))
+                                        ,(let ((title (or (match (title (htree:data node))
+                                                            ((guard e (not (str:emptyp e))) e))
+                                                          (object-display (url (htree:data node))))))
+                                           (cond
+                                             ((eq node (htree:current-owner-node history))
+                                              `(:i (:b ,title)))
+                                             ((htree:owned-p (htree:current-owner history) node)
+                                              `(:b ,title))
+                                             (t title)))))) ; Color?  Smaller?
+                          history
+                          :include-root t
+                          :collect-function #'(lambda (a b) `(,@a ,(when b `(:ul ,@b))))))))
+        (markup:markup
+         (:body (:h1 "History")
+                (:style (style output-buffer))
+                (:style (style mode))
+                (:div (markup:raw
+                       (markup:markup*
+                        tree)))))))))
+
+(define-command list-history (&key (limit 100))
+  "Print the user history as a list."
+  (with-current-html-buffer (buffer "*History list*" 'nyxt/list-history-mode:list-history-mode)
+    (markup:markup
+     (:style (style buffer))
+     (:style (cl-css:css
+              '((a
+                 :color "black")
+                ("a:hover"
+                 :color "gray"))))
+     (:h1 "History")
+     (:ul (nyxt::history-html-list :limit limit)))))
 
 (define-command paste ()
   "Paste from clipboard into active-element."
@@ -428,16 +496,18 @@ Otherwise go forward to the only child."
   (unless (or (url-empty-p url)
               (find-if (alex:rcurry #'str:starts-with? (object-string url))
                        (history-blocklist mode)))
-    (htree:add-child (make-instance 'buffer-description
-                                    :url url
-                                    :title (title (buffer mode)))
-                     (history mode)
-                     :test #'equals)
+    (log:debug "Notify URI ~a for buffer ~a with load status ~a"
+               url
+               (buffer mode)
+               (slot-value (buffer mode) 'nyxt::load-status))
+    ;; TODO: This dirty hack prevents a middle-click from adding URL to the
+    ;; history of the parent buffer.  Find a more reliable way to store URLs in
+    ;; history.
+    (unless (eq (slot-value (buffer mode) 'nyxt::load-status) :unloaded)
+      (with-current-buffer (buffer mode)
+        (nyxt::history-add url :title (title (buffer mode))
+                               :buffer (buffer mode)))))
 
-    (with-current-buffer (buffer mode)
-      (history-add url :title (title (buffer mode)))))
-
-  (store (data-profile (buffer mode)) (session-path (buffer mode)))
   url)
 
 (defmethod nyxt:on-signal-notify-title ((mode web-mode) title)
@@ -451,10 +521,6 @@ Otherwise go forward to the only child."
   nil)
 
 (defmethod nyxt:on-signal-load-finished ((mode web-mode) url)
-  ;; TODO: Setting the default zoom level works with pure Javascript, but it
-  ;; can only be done after the URL has been loaded which is a bit of a
-  ;; kludge.  Instead we could add an FFI endpoint,
-  ;; e.g. webkit_web_view_set_zoom_level.
   (unzoom-page :buffer (buffer mode)
                :ratio (current-zoom-ratio (buffer mode)))
   url)

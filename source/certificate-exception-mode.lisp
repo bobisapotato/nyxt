@@ -31,9 +31,9 @@ See the `add-domain-to-certificate-exceptions' command."
                                                             (current-buffer)
                                                             'web-mode)))
   "Suggestion function over all parent URLs."
-  (let ((parents (htree:parent-nodes (history mode))))
-    (when (htree:current (history mode))
-      (push (htree:current (history mode)) parents))
+  (let ((parents (htree:all-parents (history mode))))
+    (when (htree:current-owner-node (history mode))
+      (push (htree:current-owner-node (history mode)) parents))
     (setf parents (remove-if #'url-empty-p parents :key (alex:compose #'url #'htree:data)))
     (lambda (minibuffer)
       (if parents

@@ -3,6 +3,23 @@
 
 (in-package :nyxt)
 
+(defun make-password-interface-user-classes ()
+  "Define user classes so that users may apply define-configuration
+macro to change slot values."
+  (loop for interface in password:*interfaces* do
+           (eval `(define-user-class ,(intern (symbol-name interface)
+                                              (package-name (symbol-package interface)))))))
+
+(make-password-interface-user-classes)
+
+(defun make-password-interface ()
+  "Make a password interface for all user classes, the first one with
+a non-nil value of executable is considered to be the interface to
+make/return."
+  (find-if #'password:executable
+           (mapcar (alex:compose #'make-instance #'user-class-name)
+                   password:*interfaces*)))
+
 (defun password-suggestion-filter (password-instance)
   (let ((password-list (password:list-passwords password-instance))
         (domain (quri:uri-domain (url (current-buffer)))))
@@ -13,20 +30,16 @@
       (fuzzy-match (input-buffer minibuffer) password-list))))
 
 (defun password-debug-info ()
-  (log:debug "Password interface ~a uses executable ~s."
-             (when (password-interface *browser*)
-               (class-name (class-of (password-interface *browser*))))
-             (match (symbol-name (class-name (class-of (password-interface *browser*))))
-               ;; With `symbol-name' we remove the package prefix.
-               ("KEEPASSXC-INTERFACE" password:*keepassxc-cli-program*)
-               ("SECURITY-INTERFACE" password:*security-cli-program*)
-               ("PASSWORD-STORE-INTERFACE" password:*password-store-program*))))
+  (when (password-interface *browser*)
+    (log:debug "Password interface ~a uses executable ~s."
+               (class-name (class-of (password-interface *browser*)))
+               (password:executable (password-interface *browser*)))))
 
 (defun has-method-p (object generic-function)
   "Return non-nil if OBJECT is a specializer of a method of GENERIC-FUNCTION."
-  (find (class-of object)
-        (alex:mappend #'closer-mop:method-specializers
-                      (closer-mop:generic-function-methods generic-function))))
+  (find-if (alex:curry #'typep object)
+           (alex:mappend #'closer-mop:method-specializers
+                         (closer-mop:generic-function-methods generic-function))))
 
 (define-command save-new-password ()
   "Save password to password interface."
@@ -81,5 +94,5 @@
                               (password-suggestion-filter
                                (password-interface *browser*)))))
           (password:clip-password (password-interface *browser*) :password-name password-name)
-          (echo "Password saved to clipboard for ~a seconds." password:*sleep-timer*)))
+          (echo "Password saved to clipboard for ~a seconds." (password:sleep-timer (password-interface *browser*)))))
       (echo-warning "No password manager found.")))

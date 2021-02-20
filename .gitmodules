@@ -12,4 +12,4 @@
 	url = https://github.com/Ferada/cl-cffi-gtk/
 [submodule "quicklisp-libraries/quri"]
 	path = quicklisp-libraries/quri
-	url = https://github.com/Ambrevar/quri
+	url = https://github.com/fukamachi/quri

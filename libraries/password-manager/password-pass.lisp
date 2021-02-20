@@ -3,26 +3,18 @@
 
 (in-package :password)
 
-(eval-when (:compile-toplevel :load-toplevel :execute)
-  (export '*password-store-program*))
-(defvar *password-store-program* nil
-  "The path to the executable.")
+(define-class password-store-interface (password-interface)
+  ((executable (executable-find "pass"))
+   (sleep-timer (or (uiop:getenv "PASSWORD_STORE_CLIP_TIME") 45))
+   (password-directory (or (uiop:getenv "PASSWORD_STORE_DIR")
+                           (namestring (format nil "~a/.password-store"
+                                               (uiop:getenv "HOME"))))
+                       :reader password-directory))
+  (:export-class-name-p t)
+  (:export-accessor-names-p t)
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name)))
 
-(defclass password-store-interface (password-interface)
-  ((password-directory :reader password-directory
-                       :initarg :directory
-                       :initform (or (uiop:getenv "PASSWORD_STORE_DIR")
-                                     (namestring (format nil "~a/.password-store"
-                                                         (uiop:getenv "HOME")))))))
-
-(eval-when (:compile-toplevel :load-toplevel :execute)
-  (export 'make-password-store-interface))
-(defun make-password-store-interface ()
-  (unless *password-store-program*
-    (setf *password-store-program* (executable-find "pass")))
-  (when *password-store-program*
-    (make-instance 'password-store-interface)))
-(push #'make-password-store-interface interface-list)
+(push 'password-store-interface *interfaces*)
 
 (defmethod list-passwords ((password-interface password-store-interface))
   ;; Special care must be taken for symlinks. Say `~/.password-store/work`
@@ -44,26 +36,17 @@
 
 (defmethod clip-password ((password-interface password-store-interface) &key password-name service)
   (declare (ignore service))
-  (clip-password-string
-   ;; The common way to store secret in password-store is to use the first line
-   ;; for the secret; there's no standard for how to encode anything else.
-   ;; Because there's no support in `password` for having additional fields
-   ;; (e.g. username or email address for autofilling input fields), we'll keep
-   ;; it simple and just return the first line of the password file.
-   (first
-    (cl-ppcre:split #\newline
-                    (uiop:run-program (list *password-store-program* "show"
-                                            password-name)
-                                      :output '(:string :stripped t))))))
+  (execute password-interface (list "show" "--clip" password-name)
+    :output '(:string :stripped t)))
 
 (defmethod save-password ((password-interface password-store-interface)
                           &key password-name password service)
   (declare (ignore service))
   (if (str:emptyp password)
-      (uiop:run-program (list *password-store-program* "generate" password-name))
+      (execute password-interface (list "generate" password-name))
       (with-open-stream (st (make-string-input-stream password))
-        (uiop:run-program (list *password-store-program* "insert" "--echo" password-name)
-                          :input st))))
+        (execute password-interface (list "insert" "--echo" password-name)
+          :input st))))
 
 (defmethod password-correct-p ((password-interface password-store-interface))
   t)

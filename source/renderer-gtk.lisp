@@ -35,7 +35,7 @@ want to change the behaviour of modifiers, for instance swap 'control' and
                 :documentation "Single instantiation of our custom web context."))
   (:export-class-name-p t)
   (:export-accessor-names-p t)
-  (:accessor-name-transformer #'class*:name-identity))
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name)))
 (define-user-class browser (gtk-browser))
 
 (define-class gtk-window ()
@@ -49,7 +49,7 @@ want to change the behaviour of modifiers, for instance swap 'control' and
    (key-string-buffer))
   (:export-class-name-p t)
   (:export-accessor-names-p t)
-  (:accessor-name-transformer #'class*:name-identity))
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name)))
 (define-user-class window (gtk-window))
 
 (define-class gtk-buffer ()
@@ -62,7 +62,7 @@ want to change the behaviour of modifiers, for instance swap 'control' and
 data-manager will store the data separately for each buffer."))
   (:export-class-name-p t)
   (:export-accessor-names-p t)
-  (:accessor-name-transformer #'class*:name-identity))
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name)))
 (define-user-class buffer (gtk-buffer))
 
 (defmethod web-context ((browser gtk-browser))
@@ -94,7 +94,7 @@ See https://github.com/atlas-engineer/nyxt/issues/740")
 Otherwise run the THUNK on the renderer thread by passing it a channel and wait on the channel's result."
   (if (renderer-thread-p)
       (funcall thunk)
-      (let ((channel (make-bounded-channel 1)))
+      (let ((channel (make-channel 1)))
         (gtk:within-gtk-thread
           (funcall thunk channel))
         (calispel:? channel))))
@@ -124,7 +124,7 @@ not return."
        (if (renderer-thread-p)
            (progn
              ,@body)
-           (let ((channel (make-bounded-channel 1)))
+           (let ((channel (make-channel 1)))
              (gtk:within-gtk-thread
                (calispel:!
                 channel
@@ -165,10 +165,10 @@ not return."
 (define-class data-manager-data-path (data-path)
   ((ref :initform "data-manager"))
   (:export-class-name-p t)
-  (:accessor-name-transformer #'class*:name-identity))
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name)))
 
-(defmethod expand-data-path ((profile private-data-profile) (path data-manager-data-path))
-  "We shouldn't store any `data-manager' data for `private-data-profile'."
+(defmethod expand-data-path ((profile nosave-data-profile) (path data-manager-data-path))
+  "We shouldn't store any `data-manager' data for `nosave-data-profile'."
   nil)
 
 (defun make-web-view (&key context-buffer)
@@ -496,30 +496,36 @@ Warning: This behaviour may change in the future."
       (funcall (input-dispatcher window) event sender window nil))))
 
 (defun make-data-manager (buffer)
-  (let ((path (expand-path (data-manager-path buffer))))
-    (apply #'make-instance `(webkit:webkit-website-data-manager
-                             ,@(when path `(:base-data-directory ,path))
-                             :is-ephemeral ,(not path)))))
+  (let* ((path (expand-path (data-manager-path buffer)))
+         (manager (apply #'make-instance `(webkit:webkit-website-data-manager
+                                           ,@(when path `(:base-data-directory ,path))
+                                           :is-ephemeral ,(not path)))))
+    #+webkit2-tracking
+    (webkit:webkit-website-data-manager-set-itp-enabled manager t)
+    manager))
 
 (defun make-context (&optional buffer)
-  (let* ((context (if (and buffer
-                           ;; Initial window buffer or replacement/temp buffers
-                           ;; may have no ID.
-                           (not (str:emptyp (id buffer))))
-                      (let ((manager (make-data-manager buffer)))
-                        (make-instance 'webkit:webkit-web-context
-                                       :website-data-manager manager))
-                      (web-context *browser*)))
-         (cookie-manager (webkit:webkit-web-context-get-cookie-manager context)))
-    (when (and buffer
-               (web-buffer-p buffer)
-               (expand-path (cookies-path buffer)))
-      (webkit:webkit-cookie-manager-set-persistent-storage
-       cookie-manager
-       (expand-path (cookies-path buffer))
-       :webkit-cookie-persistent-storage-text)
-      (set-cookie-policy cookie-manager (default-cookie-policy buffer)))
-    context))
+  ;; This is to ensure that paths are not expanded when we make
+  ;; contexts for `nosave-buffer's.
+  (with-current-buffer buffer
+    (let* ((context (if (and buffer
+                             ;; Initial window buffer or replacement/temp buffers
+                             ;; may have no ID.
+                             (not (str:emptyp (id buffer))))
+                        (let ((manager (make-data-manager buffer)))
+                          (make-instance 'webkit:webkit-web-context
+                                         :website-data-manager manager))
+                        (web-context *browser*)))
+           (cookie-manager (webkit:webkit-web-context-get-cookie-manager context)))
+      (when (and buffer
+                 (web-buffer-p buffer)
+                 (expand-path (cookies-path buffer)))
+        (webkit:webkit-cookie-manager-set-persistent-storage
+         cookie-manager
+         (expand-path (cookies-path buffer))
+         :webkit-cookie-persistent-storage-text)
+        (set-cookie-policy cookie-manager (default-cookie-policy buffer)))
+      context)))
 
 (defmethod initialize-instance :after ((buffer gtk-buffer) &key)
   (let ((path (data-manager-path buffer)))
@@ -591,7 +597,8 @@ Warning: This behaviour may change in the future."
     (setf url (quri:uri (webkit:webkit-uri-request-uri request)))
     (if (null (hooks:handlers (request-resource-hook buffer)))
         (progn
-          (log:debug "Forward to renderer (no request-resource-hook handlers).")
+          (log:debug "Forward to ~s's renderer (no request-resource-hook handlers)."
+                     buffer)
           (webkit:webkit-policy-decision-use response-policy-decision)
           nil)
         (let ((request-data
@@ -610,16 +617,19 @@ Warning: This behaviour may change in the future."
                                                 :known-type-p is-known-type)))))
           (cond
             ((null request-data)
-             (log:debug "Don't forward to renderer (null request data).")
+             (log:debug "Don't forward to ~s's renderer (null request data)."
+                        buffer)
              (webkit:webkit-policy-decision-ignore response-policy-decision)
              nil)
             ((and request-data (quri:uri= url (url request-data)))
-             (log:debug "Forward to renderer (unchanged URL).")
+             (log:debug "Forward to ~s's renderer (unchanged URL)."
+                        buffer)
              (webkit:webkit-policy-decision-use response-policy-decision)
              nil)
             (t
              (setf (webkit:webkit-uri-request-uri request) (object-string (url request-data)))
-             (log:debug "Don't forward to renderer (resource request replaced with ~s)."
+             (log:debug "Don't forward to ~s's renderer (resource request replaced with ~s)."
+                        buffer
                         (object-display (url request-data)))
              ;; Warning: We must ignore the policy decision _before_ we
              ;; start the new load request, or else WebKit will be
@@ -685,6 +695,7 @@ Warning: This behaviour may change in the future."
   (gtk:gtk-container-remove (box-layout window) (gtk-object (active-buffer window)))
   (gtk:gtk-box-pack-start (box-layout window) (gtk-object buffer) :expand t)
   (gtk:gtk-widget-show (gtk-object buffer))
+  (gtk:gtk-widget-grab-focus (gtk-object buffer))
   buffer)
 
 (define-ffi-method ffi-window-set-minibuffer-height ((window gtk-window) height)
@@ -755,24 +766,20 @@ Warning: This behaviour may change in the future."
      (declare (ignore web-view param-spec))
      (on-signal-notify-title buffer nil)))
   (gobject:g-signal-connect
+   (gtk-object buffer) "web-process-crashed"
+   (lambda (web-view user-data)
+     (declare (ignore user-data))
+     (log:debug "Web process crashed for web view: ~a" web-view)))
+  (gobject:g-signal-connect
    (gtk-object buffer) "context-menu"
    (lambda (web-view context-menu event hit-test-result)
      (declare (ignore web-view event hit-test-result))
      (let ((length (webkit:webkit-context-menu-get-n-items context-menu)))
        (dolist (i (alex:iota length))
          (let* ((item (webkit:webkit-context-menu-get-item-at-position context-menu i)))
-           ;; TODO: Remove "Download Linked File" item.
            (match (webkit:webkit-context-menu-item-get-stock-action item)
-             ((or :webkit-context-menu-action-open-link-in-new-window
-                  :webkit-context-menu-action-download-link-to-disk
-                  :webkit-context-menu-action-download-image-to-disk
-                  :webkit-context-menu-action-download-video-to-disk
-                  :webkit-context-menu-action-download-audio-to-disk
-                  ;; TODO: Restore paste on GNU/Linux when fixed.
-                  ;; https://github.com/atlas-engineer/nyxt/issues/593
-                  #-darwin
-                  :webkit-context-menu-action-paste)
-              (webkit:webkit-context-menu-remove context-menu item))))))
+                  ((or :webkit-context-menu-action-open-link-in-new-window)
+                   (webkit:webkit-context-menu-remove context-menu item))))))
      ;; Return t to prevent the context menu from showing.
      nil))
   buffer)
@@ -850,7 +857,34 @@ requested a reload."
 
 #+webkit2-mute
 (defmethod ffi-buffer-enable-sound ((buffer gtk-buffer) value)
-  (webkit:webkit-web-view-set-is-muted (gtk-object buffer) value))
+  (webkit:webkit-web-view-set-is-muted (gtk-object buffer) (not value)))
+
+(defmethod ffi-buffer-download ((buffer gtk-buffer) uri)
+  (let* ((webkit-download (webkit:webkit-web-view-download-uri (gtk-object buffer) uri))
+         (download (make-instance 'download :uri uri)))
+    (setf (cancel-function download)
+          #'(lambda () (webkit:webkit-download-cancel webkit-download)))
+    (push download (downloads *browser*))
+    (gobject:g-signal-connect
+     webkit-download "received-data"
+     (lambda (webkit-download data-length)
+       (declare (ignore data-length))
+       (setf (completion-percentage download)
+             (* 100 (webkit:webkit-download-estimated-progress webkit-download)))))
+    (gobject:g-signal-connect
+     webkit-download "decide-destination"
+     (lambda (webkit-download suggested-file-name)
+       (alex:when-let* ((path (download-path buffer))
+                        (download-dir (expand-path path))
+                        (file-path (format nil "file://~a~a" download-dir suggested-file-name)))
+         (log:debug "Downloading file to ~a" file-path)
+         (webkit:webkit-download-set-destination webkit-download file-path))))
+    (gobject:g-signal-connect
+     webkit-download "created-destination"
+     (lambda (webkit-download destination)
+       (declare (ignore destination))
+       (setf (destination-path download)
+             (webkit:webkit-download-destination webkit-download))))))
 
 (define-ffi-method ffi-buffer-user-agent ((buffer gtk-buffer) value)
   (setf (webkit:webkit-settings-user-agent
@@ -899,6 +933,10 @@ custom (the specified proxy) and none."
   (the (values (or quri:uri null) list-of-strings)
        (values (proxy-uri buffer)
                (proxy-ignored-hosts buffer))))
+
+(define-ffi-method ffi-buffer-set-zoom-level ((buffer gtk-buffer) value)
+  (when (and (floatp value) (>= value 0))
+    (setf (webkit:webkit-web-view-zoom-level (gtk-object buffer)) value)))
 
 (define-ffi-method ffi-generate-input-event ((window gtk-window) event)
   ;; The "send_event" field is used to mark the event as an "unconsumed"

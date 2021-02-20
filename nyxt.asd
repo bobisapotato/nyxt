@@ -23,8 +23,6 @@
                :local-time
                :log4cl
                :mk-string-metrics
-               #-darwin
-               :osicat
                :parenscript
                :quri
                :serapeum
@@ -37,7 +35,6 @@
                :trivial-package-local-nicknames
                :trivial-types
                :unix-opts
-               :usocket
                ;; Local systems:
                :nyxt/user-interface
                :nyxt/text-buffer
@@ -55,6 +52,7 @@
                (:file "time")
                (:file "types")
                (:file "conditions")
+               (:file "user-interface")
                ;; Core functionality
                (:file "global")
                (:file "data-storage")
@@ -94,6 +92,8 @@
                (:file "help-mode")
                (:file "message-mode")
                (:file "application-mode")
+               (:file "history-tree-mode")
+               (:file "list-history-mode")
                (:file "web-mode")
                (:file "reading-line-mode")
                (:file "style-mode")
@@ -113,6 +113,7 @@
                (:file "reduce-tracking-mode")
                (:file "os-package-manager-mode")
                (:file "visual-mode")
+               (:file "watch-mode")
                ;; Web-mode commands
                (:file "bookmarklets")
                (:file "input-edit")
@@ -127,7 +128,6 @@
                (:file "status")
                ;; Depends on everything else:
                (:file "about")
-               (:file "session")
                (:file "start")
                (:file "tutorial")
                (:file "manual"))
@@ -160,9 +160,9 @@
   :components ((:file "renderer-gtk")))
 
 (asdf:defsystem :nyxt/gobject/gtk
-  :depends-on (:nyxt
+  :depends-on (:nyxt/gtk
                :cl-gobject-introspection
-               :cl-webkit2)
+               :bordeaux-threads)
   :pathname "source/"
   :components ((:file "renderer-gobject-gtk")))
 
@@ -247,6 +247,11 @@
                (:file "text-buffer")))
 
 (asdf:defsystem nyxt/history-tree
+  :depends-on (alexandria
+               cl-custom-hash-table
+               local-time
+               nyxt/class-star
+               trivial-package-local-nicknames)
   :pathname "libraries/history-tree/"
   :components ((:file "package")
                (:file "history-tree"))
@@ -262,7 +267,8 @@
                cl-ppcre
                str
                trivial-clipboard
-               uiop)
+               uiop
+               nyxt/class-star)
   :pathname "libraries/password-manager/"
   :components ((:file "package")
                (:file "password")

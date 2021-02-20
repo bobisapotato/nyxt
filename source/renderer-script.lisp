@@ -29,6 +29,7 @@ The function can be passed ARGS."
 (define-parenscript document-get-body (&key (limit 100000))
   (ps:chain document body |innerHTML| (slice 0 (ps:lisp limit))))
 
+(export-always 'document-get-paragraph-contents)
 (define-parenscript document-get-paragraph-contents (&key (limit 100000))
   (defun qsa (context selector)
     (ps:chain context (query-selector-all selector)))
@@ -87,7 +88,10 @@ The function can be passed ARGS."
                       (|insertAdjacentHTML| "afterbegin"
                                             (ps:lisp style)))))))
 
-(defmacro with-current-html-buffer ((buffer-var title mode) &body body)
+(export-always 'with-current-html-buffer)
+(defmacro with-current-html-buffer ((buffer-var title mode
+                                     &key no-history-p)
+                                    &body body)
   "Switch to a buffer in MODE displaying CONTENT.
 If a buffer in MODE with TITLE exists, reuse it, otherwise create a new buffer.
 BUFFER-VAR is bound to the new bufer in BODY.
@@ -99,7 +103,9 @@ BODY must return the HTML markup as a string."
                                     (buffer-list))
                            (funcall (symbol-function ,mode)
                                     :activate t
-                                    :buffer (make-internal-buffer :title ,title)))))
+                                    :buffer (make-internal-buffer
+                                             :title ,title
+                                             :no-history-p ,no-history-p)))))
      (html-set
       (progn
         ,@body)

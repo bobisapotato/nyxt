@@ -10,16 +10,19 @@
 :END:
 :CONTENTS:
 - [[#developer-installation-with-guix][Developer installation with Guix]]
+- [[#developer-installation-with-nix][Developer installation with Nix]]
+  - [[#building-for-local-development][Building for local development]]
+  - [[#compiling][Compiling]]
 - [[#standard-developer-installation][Standard developer installation]]
   - [[#installing-sbcl][Installing SBCL]]
   - [[#installing-quicklisp-optional][Installing Quicklisp (optional)]]
   - [[#gtk-dependencies][GTK dependencies]]
     - [[#lisp-dependencies][Lisp dependencies]]
-    - [[#gnulinux-gtk-dependencies][GNU/Linux GTK dependencies]]
+    - [[#gnulinux-freebsd-gtk-dependencies][GNU/Linux, FreeBSD GTK dependencies]]
     - [[#macos-specific-dependencies][macOS specific dependencies]]
   - [[#qt-dependencies][Qt dependencies]]
     - [[#lisp-dependencies][Lisp dependencies]]
-    - [[#gnulinux-dependencies][GNU/Linux dependencies]]
+    - [[#gnulinux-freebsd-dependencies][GNU/Linux, FreeBSD dependencies]]
     - [[#macos-dependencies][macOS dependencies]]
   - [[#fetch-the-source-code][Fetch the source code]]
   - [[#compile][Compile]]
@@ -79,7 +82,7 @@ available in both WebKit and WebEngine flavors.  Support for graphics and
 OS integration is provided via:
 
 - macOS: GTK, Qt
-- GNU/Linux: GTK, Qt
+- GNU/Linux, FreeBSD: GTK, Qt
 
 ** Installing SBCL
 
@@ -124,7 +127,7 @@ listed in ~asdf:*central-registry*~.  For instance:
   git clone https://github.com/joachifm/cl-webkit ~/common-lisp/cl-webkit
 #+end_src
 
-*** GNU/Linux GTK dependencies
+*** GNU/Linux, FreeBSD GTK dependencies
 
 - WebKitGTK+ also known as webkit2gtk (make sure to use the most recent
   version for security reasons)
@@ -143,6 +146,11 @@ listed in ~asdf:*central-registry*~.  For instance:
 - Fedora:
   #+begin_src sh
     sudo dnf install sbcl webkit2gtk3-devel glib-networking gsettings-desktop-schemas libfixposix-devel xclip enchant
+  #+end_src
+
+- FreeBSD and derivatives
+  #+begin_src sh
+    pkg install sbcl webkit2-gtk3 glib-networking libfixposix xclip enchant
   #+end_src
 
 If your distribution does not install libraries in an [[https://en.wikipedia.org/wiki/Filesystem_Hierarchy_Standard][FHS]]-expected location, you
@@ -201,7 +209,7 @@ listed in ~asdf:*central-registry*~:
 Please follow the instructions in the cl-webengine repository for
 details about how to install it on your system.
 
-*** GNU/Linux dependencies
+*** GNU/Linux, FreeBSD dependencies
 
 - Qt 5 (qtbase, qtwebchannel, qtdeclarative)
 - Qt 5 WebEngine
@@ -238,6 +246,11 @@ produce an application bundle which you can copy into your
     make all
   #+end_src
 
+- FreeBSD
+  #+begin_src sh
+    gmake all
+  #+end_src
+  
 - macOS:
   #+begin_src sh
     make all

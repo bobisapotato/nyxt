@@ -9,12 +9,17 @@
 
 (export-always 'format-status-modes)
 (defun format-status-modes (&optional (buffer (current-buffer)))
-  (format nil "~{~a~^ ~}"
+  (format nil "~:[~;⚠ nosave ~]~{~a~^ ~}"
+          (nosave-buffer-p buffer)
           (mapcar (lambda (m) (str:replace-all "-mode" "" m))
                   (set-difference
                    (mapcar (alex:compose #'str:downcase #'mode-name) (modes buffer))
                    *invisible-modes*
                    :test #'string=))))
+
+(defun list-modes (&optional (buffer (current-buffer)))
+  (format nil "~{~a~^ ~}"
+          (mapcar (alex:compose #'str:downcase #'mode-name) (modes buffer))))
 
 (export-always 'format-status-buttons)
 (defun format-status-buttons ()
@@ -77,4 +82,5 @@
            (:div :class "arrow arrow-left"
                  :style "background-color:rgb(120,120,120)" "")
            (:div :id "modes"
+                 :title (list-modes buffer)
                  (format-status-modes buffer))))))

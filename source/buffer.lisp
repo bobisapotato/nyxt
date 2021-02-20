@@ -160,25 +160,6 @@ distance scroll-left or scroll-right will scroll.")
                       :documentation "The ratio of the page to scroll.
 A value of 0.95 means that the bottom 5% will be the top 5% when scrolling
 down.")
-   (box-style (cl-css:css
-               '((".nyxt-hint"
-                  :background "linear-gradient(#fcff9e, #efcc00)"
-                  :color "black"
-                  :border "1px black solid"
-                  :padding "1px 3px 1px 3px"
-                  :border-radius "2px"
-                  :z-index #.(1- (expt 2 31)))))
-              :documentation "The style of the boxes, e.g. link hints.")
-   (highlighted-box-style (cl-css:css
-                           '((".nyxt-hint.nyxt-highlight-hint"
-                              :font-weight "500"
-                              :background "#fcff9e")))
-                          :documentation "The style of highlighted boxes, e.g. link hints.")
-   (hints-alphabet "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                   :type string
-                   :documentation "The alphabet (charset) to use for hints.
-Order matters -- the ones that go first are more likely to appear more often
-and to index the top of the page.")
    (buffer-load-hook (make-hook-uri->uri
                       :combination #'hooks:combine-composed-hook)
                      :type hook-uri->uri
@@ -191,19 +172,18 @@ and must return a (possibly new) URL.")
                        :type hook-buffer
                        :documentation "Hook run before `buffer-delete' takes effect.
 The handlers take the buffer as argument.")
-   (session-path (make-instance 'session-data-path
-                                :basename "default"
-                                :dirname (uiop:xdg-data-home +data-root+ "sessions"))
-                 :type data-path
-                 :documentation "
-The path where the system will create/save the session.")
    (download-path (make-instance 'download-data-path
                                  :dirname (xdg-download-dir))
                   :type data-path
                   :documentation "Path of directory where downloads will be
 stored.  Nil means use system default.
 Downloads are kept in browser's `user-data', keyed by the expanded `download-path'.")
-   (history-path (make-instance 'history-data-path :basename "history")
+   (download-engine :initform :lisp
+                    :type symbol
+                    :documentation "Select a download engine to use,
+such as :lisp or :renderer.")
+   (history-path (make-instance 'history-data-path :basename "default"
+                                                   :dirname (uiop:xdg-data-home +data-root+ "history"))
                  :type data-path
                  :documentation "
 The path where the system will create/save the global history.
@@ -227,7 +207,7 @@ Rules are kept in browser's `user-data', keyed by the expanded `auto-mode-rules-
   (:export-class-name-p t)
   (:export-accessor-names-p t)
   (:export-predicate-name-p t)
-  (:accessor-name-transformer #'class*:name-identity))
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name)))
 
 (define-user-class buffer)
 
@@ -267,13 +247,24 @@ Must be one of `:always' (accept all cookies), `:never' (reject all cookies),
   (:export-class-name-p t)
   (:export-accessor-names-p t)
   (:export-predicate-name-p t)
-  (:accessor-name-transformer #'class*:name-identity))
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name)))
 
 (define-user-class web-buffer)
 
 (defmethod initialize-instance :after ((buffer web-buffer) &key)
   (when (expand-path (cookies-path buffer))
     (ensure-parent-exists (expand-path (cookies-path buffer)))))
+
+(define-class nosave-buffer (user-web-buffer)
+  ((data-profile (make-instance 'nosave-data-profile))
+   (default-modes '(reduce-tracking-mode certificate-exception-mode
+                    web-mode base-mode)))
+  (:export-class-name-p t)
+  (:export-accessor-names-p t)
+  (:export-predicate-name-p t)
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name)))
+
+(define-user-class nosave-buffer)
 
 (define-class internal-buffer (user-buffer)
   ((style #.(cl-css:css
@@ -323,7 +314,7 @@ Must be one of `:always' (accept all cookies), `:never' (reject all cookies),
   (:export-class-name-p t)
   (:export-accessor-names-p t)
   (:export-predicate-name-p t)
-  (:accessor-name-transformer #'class*:name-identity))
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name)))
 
 (define-user-class internal-buffer)
 
@@ -393,9 +384,10 @@ Must be one of `:always' (accept all cookies), `:never' (reject all cookies),
                 :color "rgb(230, 230, 230)"
                 :text-align "right"
                 :padding-right "5px"
-                :text-overflow "ellipsis"
-                :overflow-x "hidden"
+                :overflow-x "scroll"
                 :white-space "nowrap")
+               ("#modes::-webkit-scrollbar"
+                :display "none")
                (.button
                 :color "rgb(250, 250, 250)"
                 :text-decoration "none"
@@ -408,7 +400,7 @@ Must be one of `:always' (accept all cookies), `:never' (reject all cookies),
   (:export-class-name-p t)
   (:export-accessor-names-p t)
   (:export-predicate-name-p t)
-  (:accessor-name-transformer #'class*:name-identity))
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name)))
 
 (define-user-class status-buffer)
 
@@ -453,6 +445,16 @@ BUFFER's modes."
     (on-signal-notify-uri mode (url buffer)))
   (url buffer))
 
+(defmethod on-signal-notify-uri ((buffer internal-buffer) no-uri)
+  "Internal buffers don't load external resources and as such don't need URI
+change notifications.
+In particular, we don't want to register a URL in the history via the `web-mode'
+notification."
+  ;; TODO: We should not ignore this notification since it may be used by modes.
+  ;; In particular, we receive a legit notify::uri when clicking on an anchor URL.
+  (declare (ignore no-uri))
+  (url buffer))
+
 (export-always 'on-signal-notify-title)
 (defmethod on-signal-notify-title ((buffer buffer) no-title)
   "Set BUFFER's `title' slot, then dispatch `on-signal-notify-title' over the
@@ -482,102 +484,85 @@ BUFFER's modes."
 
 (hooks:define-hook-type buffer (function (buffer)))
 
-(define-class buffer-description ()
-  ((url (quri:uri "")
-        :accessor nil
-        :documentation "URL should be a `quri:uri'.
-We also support the `string' type only for serialization purposes.  The URL is
-automatically turned into a `quri:uri' in the accessor.")
-   (title ""))
-  (:export-class-name-p t)
-  (:export-accessor-names-p t)
-  (:accessor-name-transformer #'class*:name-identity))
-
-(defmethod url ((bd buffer-description))
-  "This accessor ensures we always return a `quri:uri'.
-This is useful in cases the URL is originally stored as a string (for instance
-when deserializing a `buffer-description').
-
-We can't use `initialize-instance :after' to convert the URL because
-`s-serialization:deserialize-sexp' sets the slots manually after making the
-class."
-  (unless (quri:uri-p (slot-value bd 'url))
-    (setf (slot-value bd 'url) (ensure-url (slot-value bd 'url))))
-  (slot-value bd 'url))
-
-(defmethod (setf url) (value (bd buffer-description))
-  (setf (slot-value bd 'url) value))
-
-(defmethod s-serialization::serialize-sexp-internal ((bd buffer-description)
-                                                     stream
-                                                     serialization-state)
-  "Serialize `buffer-description' by turning the URL into a string."
-  (let ((new-bd (make-instance 'buffer-description
-                               :title (title bd))))
-    (setf (url new-bd) (object-string (url bd)))
-    (call-next-method new-bd stream serialization-state)))
-
-(defmethod object-string ((buffer-description buffer-description))
-  (object-string (url buffer-description)))
-
-(defmethod object-display ((buffer-description buffer-description))
-  (format nil "~a  ~a"
-          (title buffer-description)
-          (object-display (url buffer-description))))
-
-(export-always 'equals)
-(defmethod equals ((bd1 buffer-description) (bd2 buffer-description))
-  "Comparison function for buffer history entries.
-An entry is uniquely identified from its URL.  We do not take the
-title into accound as it may vary from one load to the next."
-  (quri:uri= (url bd1) (url bd2)))
-
 (defmethod object-string ((buffer buffer))
   (object-string (url buffer)))
 
 (defmethod object-display ((buffer buffer))
   (format nil "~a  ~a" (title buffer) (object-display (url buffer))))
 
-(define-command make-buffer (&key (title "") modes (url ""))
+(define-command make-buffer (&key (title "") modes (url "") parent-buffer (load-url-p t))
   "Create a new buffer.
 MODES is a list of mode symbols.
-If URL is `:default', use `default-new-buffer-url'."
-  (let* ((buffer (buffer-make *browser* :title title :default-modes modes))
+If URL is `:default', use `default-new-buffer-url'.
+PARENT-BUFFER is useful when we want to record buffer- and history relationships.
+LOAD-URL-P controls whether to load URL right at buffer creation."
+  (let* ((buffer (buffer-make *browser*
+                              :title title
+                              :default-modes modes
+                              :parent-buffer parent-buffer))
          (url (if (eq url :default)
                   (default-new-buffer-url buffer)
                   url)))
     (unless (url-empty-p url)
-      (buffer-load url :buffer buffer))
+      (if load-url-p
+          (buffer-load url :buffer buffer)
+          (setf (url buffer) (quri:uri url))))
     buffer))
 
-(define-command make-internal-buffer (&key (title "") modes)
+(define-command make-nosave-buffer (&key (title "") modes (url "") (load-url-p t))
+  "Create a new buffer that won't save anything to the filesystem.
+MODES is a list of mode symbols.
+If URL is `:default', use `default-new-buffer-url'.
+LOAD-URL-P controls whether to load URL right at buffer creation."
+  (let* ((buffer (buffer-make *browser* :title title
+                                        :default-modes modes
+                                        :nosave-buffer-p t))
+         (url (if (eq url :default)
+                  (default-new-buffer-url buffer)
+                  url)))
+    (unless (url-empty-p url)
+      (if load-url-p
+          (buffer-load url :buffer buffer)
+          (setf (url buffer) (quri:uri url))))
+    buffer))
+
+(define-command make-internal-buffer (&key (title "") modes
+                                      no-history-p)
   "Create a new buffer.
 MODES is a list of mode symbols.
 If URL is `:default', use `default-new-buffer-url'."
-  (buffer-make *browser* :title title :default-modes modes :internal-buffer-p t))
+  (buffer-make *browser* :title title :default-modes modes :internal-buffer-p t
+               :no-history-p no-history-p))
 
 (declaim (ftype (function (browser &key (:title string)
                                    (:data-profile data-profile)
                                    (:default-modes list)
                                    (:dead-buffer buffer)
-                                   (:internal-buffer-p boolean)))
+                                   (:nosave-buffer-p boolean)
+                                   (:internal-buffer-p boolean)
+                                   (:parent-buffer buffer)
+                                   (:no-history-p boolean)))
                 buffer-make))
-(defun buffer-make (browser &key data-profile title default-modes dead-buffer internal-buffer-p)
+(defun buffer-make (browser &key data-profile title default-modes
+                                 dead-buffer internal-buffer-p
+                                 parent-buffer no-history-p
+                                 (nosave-buffer-p (nosave-buffer-p parent-buffer)))
   "Make buffer with title TITLE and modes DEFAULT-MODES.
 Run `*browser*'s `buffer-make-hook' over the created buffer before returning it.
 If DEAD-BUFFER is a dead buffer, recreate its web view and give it a new ID."
-  (let* ((buffer (if dead-buffer
-                     (progn
-                       ;; Dead buffer ID must be renewed before calling `ffi-buffer-make'.
-                       (setf (id dead-buffer) (get-unique-buffer-identifier *browser*))
-                       (ffi-buffer-make dead-buffer))
-                     (apply #'make-instance (if internal-buffer-p
-                                                'user-internal-buffer
-                                                'user-web-buffer)
-                            :id (get-unique-buffer-identifier *browser*)
-                            (append (when title `(:title ,title))
-                                    (when default-modes `(:default-modes ,default-modes))
-                                    (when data-profile `(:data-profile ,data-profile)))))))
+  (let ((buffer (if dead-buffer
+                    (progn
+                      ;; Dead buffer ID must be renewed before calling `ffi-buffer-make'.
+                      (setf (id dead-buffer) (get-unique-buffer-identifier *browser*))
+                      (ffi-buffer-make dead-buffer))
+                    (apply #'make-instance (cond
+                                             (internal-buffer-p 'user-internal-buffer)
+                                             (nosave-buffer-p 'user-nosave-buffer)
+                                             (t 'user-web-buffer))
+                           :id (get-unique-buffer-identifier *browser*)
+                           (append (when title `(:title ,title))
+                                   (when default-modes `(:default-modes ,default-modes))
+                                   (when data-profile `(:data-profile ,data-profile)))))))
     (hooks:run-hook (buffer-before-make-hook *browser*) buffer)
     ;; Modes might require that buffer exists, so we need to initialize them
     ;; after the view has been created.
@@ -585,6 +570,22 @@ If DEAD-BUFFER is a dead buffer, recreate its web view and give it a new ID."
     (when dead-buffer                   ; TODO: URL should be already set.  Useless?
       (setf (url buffer) (url dead-buffer)))
     (buffers-set (id buffer) buffer)
+    (unless no-history-p
+      ;; When we create buffer, current one can override the
+      ;; data-profile of the created buffer. This is dangerous,
+      ;; especially for nosave buffers.
+      (with-current-buffer buffer
+        ;; Register buffer in global history:
+        (with-data-access (history (history-path buffer)
+                                   :default (make-history-tree buffer))
+          ;; Owner may already exist if history was just create with the above
+          ;; default value.
+          (unless (htree:owner history (id buffer))
+            (htree:add-owner history (id buffer)
+                             :creator-id (when (and parent-buffer
+                                                    (not nosave-buffer-p)
+                                                    (not (nosave-buffer-p parent-buffer)))
+                                           (id parent-buffer)))))))
     ;; Run hooks before `initialize-modes' to allow for last-minute modification
     ;; of the default modes.
     (hooks:run-hook (buffer-make-hook browser) buffer)
@@ -609,13 +610,15 @@ If DEAD-BUFFER is a dead buffer, recreate its web view and give it a new ID."
                                   replacement-buffer)))
     (ffi-buffer-delete buffer)
     (buffers-delete (id buffer))
-    (setf (id buffer) "")
+    ;; (setf (id buffer) "") ; TODO: Reset ID?
+    (with-data-access (history (history-path buffer))
+      (htree:delete-owner history (id buffer)))
     (add-to-recent-buffers buffer)
-    (store (data-profile buffer) (session-path buffer))))
+    (store (data-profile buffer) (history-path buffer))))
 
 (export-always 'buffer-list)
 (defun buffer-list (&key sort-by-time domain)
-  (let* ((buffer-list (alex:hash-table-values (slot-value *browser* 'buffers)))
+  (let* ((buffer-list (alex:hash-table-values (buffers *browser*)))
          (buffer-list (if sort-by-time (sort
                                         buffer-list #'local-time:timestamp> :key #'last-access)
                           buffer-list))
@@ -653,6 +656,14 @@ proceeding."
   (setf (last-access (active-buffer window)) (local-time:now))
   (let ((window-with-same-buffer (find buffer (delete window (window-list))
                                        :key #'active-buffer)))
+    ;; When switching buffers, `current-buffer' is still the old one,
+    ;; so path is expanded/queried by the rules of the old
+    ;; buffer. That's not desirable, especially for nosave-buffers.
+    (with-current-buffer buffer
+      (unless (internal-buffer-p buffer)
+        (with-data-access (history (history-path buffer)
+                           :default (make-history-tree buffer))
+          (htree:set-current-owner history (id buffer)))))
     (if window-with-same-buffer ;; if visible on screen perform swap, otherwise just show
         (let ((temp-buffer (make-dummy-buffer))
               (old-buffer (active-buffer window)))
@@ -714,7 +725,7 @@ proceeding."
 (define-command switch-buffer (&key id)
   "Switch the active buffer in the current window."
   (if id
-      (set-current-buffer (gethash id (slot-value *browser* 'buffers)))
+      (set-current-buffer (buffers-get id))
       (let ((buffer (prompt-minibuffer
                      :input-prompt "Switch to buffer"
                      ;; For commodity, the current buffer shouldn't be the first one on the list.
@@ -739,10 +750,12 @@ proceeding."
         (set-current-buffer (first matching-buffers))
         (switch-buffer-domain :domain domain))))
 
-(define-command make-buffer-focus (&key (url :default))
+(define-command make-buffer-focus (&key (url :default) parent-buffer nosave-buffer-p)
   "Switch to a new buffer.
 See `make-buffer'."
-  (let ((buffer (make-buffer :url url)))
+  (let ((buffer (if nosave-buffer-p
+                    (make-nosave-buffer :url url)
+                    (make-buffer :url url :parent-buffer parent-buffer))))
     (set-current-buffer buffer)
     buffer))
 
@@ -835,16 +848,15 @@ URL is then transformed by BUFFER's `buffer-load-hook'."
             (ffi-buffer-evaluate-javascript buffer (quri:url-decode (quri:uri-path url)))
             (ffi-buffer-load buffer url))))))
 
-(define-command set-url (&key new-buffer-p prefill-current-url-p)
+(define-command set-url (&key new-buffer-p prefill-current-url-p 
+                              (nosave-buffer-p (nosave-buffer-p (current-buffer))))
   "Set the URL for the current buffer, completing with history."
-  (let ((history (minibuffer-set-url-history *browser*)))
+  (let ((history (unless nosave-buffer-p (minibuffer-set-url-history *browser*))))
     (when history
       (containers:insert-item history (url (current-buffer))))
     (let ((url (prompt-minibuffer
-                :input-prompt (format nil "Open URL in ~A buffer"
-                                      (if new-buffer-p
-                                          "new"
-                                          "current"))
+                :input-prompt (format nil "Open URL in ~:[current~;new~]~:[~; nosave~] buffer"
+                                      new-buffer-p nosave-buffer-p)
                 :input-buffer (if prefill-current-url-p
                                   (object-string (url (current-buffer))) "")
                 :default-modes '(set-url-mode minibuffer-mode)
@@ -862,7 +874,7 @@ URL is then transformed by BUFFER's `buffer-load-hook'."
                                    ;; Make empty buffer, or else there might be
                                    ;; a race condition between the URL that's
                                    ;; loaded and the default one.
-                                   (make-buffer-focus :url "")
+                                   (make-buffer-focus :url "" :nosave-buffer-p nosave-buffer-p)
                                    (current-buffer))))))
 
 (define-command set-url-from-current-url ()
@@ -872,6 +884,10 @@ URL is then transformed by BUFFER's `buffer-load-hook'."
 (define-command set-url-new-buffer ()
   "Prompt for a URL and set it in a new focused buffer."
   (set-url :new-buffer-p t))
+
+(define-command set-url-nosave-buffer ()
+  "Prompt for a URL and set it in a new focused nosave buffer."
+  (set-url :new-buffer-p t :nosave-buffer-p t))
 
 (define-command reload-current-buffer (&optional (buffer (current-buffer)))
   "Reload of BUFFER or current buffer if unspecified."

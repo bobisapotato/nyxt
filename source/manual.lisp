@@ -15,6 +15,11 @@ of Nyxt."))
     (:p "Nyxt is written in the Common Lisp programming language which offers a
 great perk: everything in the browser can be customized by the user, even while
 it's running!")
+    (:p "To get started with Common Lisp, we recommend checking out
+    our web page: "
+        (:a :href "https://nyxt.atlas.engineer/learn-lisp" "Learn Lisp")
+        ". It contains numerous pointers to other resources, including
+        free books both for beginners and seasoned programmers.")
     (:p "Nyxt provides a mechanism for new users unfamiliar with Lisp
 to customize Nyxt. Start by invoking the
 commands " (:code "describe-class") " or " (:code "describe-slot") ".
@@ -205,7 +210,7 @@ GnuPG documentation for how to set it up.")
    ((name :initform \"dev\"))
    (:export-class-name-p t)
    (:export-accessor-names-p t)
-   (:accessor-name-transformer #'class*:name-identity)
+   (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name))
    (:documentation \"Development profile.\"))
 
 \(defmethod nyxt:expand-data-path ((profile dev-data-profile) (path data-path))
@@ -231,12 +236,16 @@ with " (:code "nyxt --data-profile dev") ".")
     (:p "Nyxt provides a uniform interface to some password managers including "
         (:a :href "https://keepassxc.org/" "KeepassXC")
         " and " (:a :href "https://www.passwordstore.org/" "Password Store") ". "
-        "The installed password manager is automatically detected.  If you want
-to force, say, KeepassXC, add the following to your configuration file:")
-    (:pre (:code
-           "(push #'password:make-keepassxc-interface password:interface-list)"))
-    (:p "See the " (:code "password:interface-list") " for the list of registered
+        "The installed password manager is automatically
+detected. Use " (:code "make-password-interface") " to automatically
+return the first password interface with a non-nil executable
+path (e.g. the executable was found on your system).")
+    (:p "See the " (:code "password:*interfaces*") " for the list of registered
 password manager interfaces.")
+    (:p "You may use the " (:code "define-configuration") " macro with
+any of the password interfaces to configure them. Please make sure to
+use the package prefixed class name/slot designators within
+the " (:code "define-configuration") " macro.")
     (:ul
      (:li (command-markup 'save-new-password) ": Query for name and new password to persist in the database.")
      (:li (command-markup 'copy-password) ": Copy selected password to the clipboard."))
@@ -263,9 +272,9 @@ convenience, " (:code "load-init-file") " (re)loads your initialization file.")
 existing instance instead of a separate instance that exits immediately.")
     (:p "The `remote-execution-p' slot of the `browser' class of the remote
 instance must be non-nil.")
-    (:p "To let know a private instance of Nyxt to load a foo.lisp script and run it's
+    (:p "To let know a private instance of Nyxt to load a foo.lisp script and run its
 `foo' function:")
-    (:pre (:code "nyxt --data-profile private --remote --load foo.lisp --eval '(foo)'"))
+    (:pre (:code "nyxt --data-profile nosave --remote --load foo.lisp --eval '(foo)'"))
 
     (:h2 "Troubleshooting")
     (:h3 "Playing videos")

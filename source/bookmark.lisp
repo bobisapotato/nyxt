@@ -36,7 +36,7 @@ SEARCH-URL maybe either be a full URL or a path.  If the latter, the path is
 appended to the URL."))
   (:export-class-name-p t)
   (:export-accessor-names-p t)
-  (:accessor-name-transformer #'class*:name-identity))
+  (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name)))
 
 (defmethod object-string ((entry bookmark-entry))
   (object-string (url entry)))
@@ -66,6 +66,7 @@ For instance, these are equal:
       (schemeless-uri= url1 url2)
       (the (values boolean &optional) (quri:uri= url1 url2))))
 
+(export-always 'equals)
 (defmethod equals ((e1 bookmark-entry) (e2 bookmark-entry))
   "Entries are equal if the hosts and the paths are equal.
 In particular, we ignore the protocol (e.g. HTTP or HTTPS does not matter)."
@@ -111,21 +112,21 @@ In particular, we ignore the protocol (e.g. HTTP or HTTPS does not matter)."
 
 (export-always 'match-bookmarks)
 (defun match-bookmarks (specification &optional (as-url-list-p t))
-  (let* ((input-specs (multiple-value-list
-                       (parse-tag-specification
-                        specification)))
-         (tag-specs (first input-specs))
-         (non-tags (str:downcase (str:join " " (second input-specs))))
-         (validator (ignore-errors (tag-specification-validator tag-specs)))
-         (bookmarks (get-data (bookmarks-path (current-buffer)))))
-    (when validator
-      (setf bookmarks (remove-if (lambda (bookmark)
-                                   (not (funcall validator
-                                                 (tags bookmark))))
-                                 bookmarks)))
-    (if as-url-list-p
-        (mapcar #'url (fuzzy-match non-tags bookmarks))
-        (fuzzy-match non-tags bookmarks))))
+  (with-data-unsafe (bookmarks (bookmarks-path (current-buffer)))
+    (let* ((input-specs (multiple-value-list
+                         (parse-tag-specification
+                          specification)))
+           (tag-specs (first input-specs))
+           (non-tags (str:downcase (str:join " " (second input-specs))))
+           (validator (ignore-errors (tag-specification-validator tag-specs))))
+      (when validator
+        (setf bookmarks (remove-if (lambda (bookmark)
+                                     (not (funcall validator
+                                                   (tags bookmark))))
+                                   bookmarks)))
+      (if as-url-list-p
+          (mapcar #'url (fuzzy-match non-tags bookmarks))
+          (fuzzy-match non-tags bookmarks)))))
 
 (defun bookmark-suggestion-filter ()
   (lambda (minibuffer)
@@ -138,19 +139,19 @@ In particular, we ignore the protocol (e.g. HTTP or HTTPS does not matter)."
 (defun tag-suggestion-filter (&key with-empty-tag extra-tags)
   "When with-empty-tag is non-nil, insert the empty string as the first tag.
 This can be useful to let the user select no tag when returning directly."
-  (let ((tags (sort (append extra-tags
-                            (mapcar (lambda (name) (make-tag :name name))
-                                    (delete-duplicates
-                                     (apply #'append
-                                            (mapcar #'tags (get-data
-                                                            (bookmarks-path (current-buffer)))))
-                                     :test #'string-equal)))
-                    #'string-lessp
-                    :key #'tag-name)))
-    (when with-empty-tag
-      (push "" tags))
-    (lambda (minibuffer)
-      (fuzzy-match (text-buffer::word-at-cursor (input-cursor minibuffer)) tags))))
+  (with-data-unsafe (bookmarks (bookmarks-path (current-buffer)))
+    (let ((tags (sort (append extra-tags
+                              (mapcar (lambda (name) (make-tag :name name))
+                                      (delete-duplicates
+                                       (apply #'append
+                                              (mapcar #'tags bookmarks))
+                                       :test #'string-equal)))
+                      #'string-lessp
+                      :key #'tag-name)))
+      (when with-empty-tag
+        (push "" tags))
+      (lambda (minibuffer)
+        (fuzzy-match (text-buffer::word-at-cursor (input-cursor minibuffer)) tags)))))
 
 (define-command insert-tag (&optional (minibuffer (current-minibuffer)))
   "Replace current word with selected tag."
@@ -170,38 +171,37 @@ This can be useful to let the user select no tag when returning directly."
 (define-command list-bookmarks ()
   "List all bookmarks in a new buffer."
   (with-current-html-buffer (bookmarks-buffer "*Bookmarks*" 'base-mode)
-    (markup:markup
-     (:style (style bookmarks-buffer))
-     (:h1 "Bookmarks")
-     (:body
-      (loop for bookmark in (get-data (bookmarks-path (current-buffer)))
-            collect
-               (let ((url-display (object-display (url bookmark)))
-                     (url-href (object-string (url bookmark))))
-                 (markup:markup (:div
-                                 (:p (:b "Title: ") (title bookmark))
-                                 (:p (:b "URL: ") (:a :href url-href
-                                                      url-display))
-                                 (:p (:b "Tags: ")
-                                     (when (tags bookmark)
-                                       (format nil " (~{~a~^, ~})" (tags bookmark))))
-                                 (:p (:a :class "button"
-                                         :href (lisp-url `(nyxt::delete-bookmark ,url-href)) "Delete"))
-                                 (:hr "")))))))))
+    (with-data-unsafe (bookmarks (bookmarks-path (current-buffer)))
+      (markup:markup
+      (:style (style bookmarks-buffer))
+      (:h1 "Bookmarks")
+      (:body
+       (loop for bookmark in bookmarks
+             collect
+             (let ((url-display (object-display (url bookmark)))
+                   (url-href (object-string (url bookmark))))
+               (markup:markup (:div
+                               (:p (:b "Title: ") (title bookmark))
+                               (:p (:b "URL: ") (:a :href url-href
+                                                    url-display))
+                               (:p (:b "Tags: ")
+                                   (when (tags bookmark)
+                                     (format nil " (~{~a~^, ~})" (tags bookmark))))
+                               (:p (:a :class "button"
+                                       :href (lisp-url `(nyxt::delete-bookmark ,url-href)) "Delete"))
+                               (:hr ""))))))))))
 
 (declaim (ftype (function (quri:uri) string) url-bookmark-tags))
 (export-always 'url-bookmark-tags)
 (defun url-bookmark-tags (url)
   "Return the space-separated string of tags of the bookmark corresponding to
 URL."
-  (the (values string &optional)
-       (let ((existing-bm (find url
-                                (get-data (bookmarks-path (current-buffer)))
-                                :key #'url
-                                :test #'equal-url)))
-         (if existing-bm
-             (str:join " " (tags existing-bm))
-             ""))))
+  (with-data-unsafe (bookmarks (bookmarks-path (current-buffer)))
+    (the (values string &optional)
+        (let ((existing-bm (find url bookmarks :key #'url :test #'equal-url)))
+          (if existing-bm
+              (str:join " " (tags existing-bm))
+              "")))))
 
 (define-command bookmark-current-page (&optional (buffer (current-buffer)))
   "Bookmark the URL of BUFFER."
@@ -373,12 +373,12 @@ rest in background buffers."
       (log:error "During bookmark deserialization: ~a" c)
       nil)))
 
-(defmethod store ((profile data-profile) (path bookmarks-data-path))
+(defmethod store ((profile data-profile) (path bookmarks-data-path) &key &allow-other-keys)
   "Store the bookmarks to the buffer `bookmarks-path'."
   (with-data-file (file path
                         :direction :output
                         :if-does-not-exist :create
-                        :if-exists :supersede)
+                        :if-exists :overwrite)
     ;; TODO: Make sorting customizable?  Note that `store-sexp-bookmarks' is
     ;; already a customizable function.
     (setf (get-data path)
@@ -394,7 +394,7 @@ rest in background buffers."
           (expand-path path)))
   t)
 
-(defmethod restore ((profile data-profile) (path bookmarks-data-path))
+(defmethod restore ((profile data-profile) (path bookmarks-data-path) &key &allow-other-keys)
   "Restore the bookmarks from the buffer `bookmarks-path'."
   (handler-case
       (let ((data (with-data-file (file path

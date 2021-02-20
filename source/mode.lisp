@@ -44,7 +44,7 @@ Example:
                        ,direct-slots
                        (:export-class-name-p t)
                        (:export-accessor-names-p t)
-                       (:accessor-name-transformer #'class*:name-identity)))
+                       (:accessor-name-transformer (hu.dwim.defclass-star:make-name-transformer name))))
          (configurable-class-name (user-class-name name)))
     (when docstring
       (setf class-args (append class-args
@@ -184,7 +184,7 @@ It may be MODE-SYMBOL itself."
 We loop over `*command-list*' to find the mode command since a mode may be
 defined in any package and is unique.
 
-If MODE-SYMBOL is a mode that inherits from another without defining a its own
+If MODE-SYMBOL is a mode that inherits from another without defining its own
 toggle command, return the toggle command of the parent."
   (or (find-if (lambda (c)
                  (eq (find-symbol (string mode-symbol) (pkg c))
@@ -195,7 +195,7 @@ toggle command, return the toggle command of the parent."
         (m (mode-command (class-name (original-class m)))))))
 
 (defun make-mode (mode-symbol buffer)
-  (log:debug mode-symbol buffer (mode-command mode-symbol))
+  ;; (log:debug mode-symbol buffer (mode-command mode-symbol))
   (match (mode-command mode-symbol)
     ;; ":activate t" should not be necessary here since (modes buffer) should be
     ;; empty.
